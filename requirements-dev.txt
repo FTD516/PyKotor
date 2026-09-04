@@ -1,11 +1,8 @@
 -r Tools/BatchPatcher/requirements.txt
--r Tools/HolocronToolset/requirements.txt
--r Tools/HoloPatcher/requirements.txt
--r Tools/HoloPatcher/recommended.txt
 -r Libraries/PyKotor/requirements.txt
 -r Libraries/PyKotor/recommended.txt
 -r Libraries/PyKotorGL/requirements.txt
-#-r Libraries/PyKotorGL/optional.txt
+-r Libraries/PyKotorGL/optional.txt
 -r Libraries/PyKotorFont/requirements.txt
 mypy
 ruff
@@ -19,3 +16,5 @@ pytest-html
 types-Pillow
 types-Send2Trash
 send2trash
+loggerplus
+defusedxml

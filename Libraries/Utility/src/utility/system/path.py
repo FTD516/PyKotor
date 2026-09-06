@@ -1022,3 +1022,7 @@ class ChDir:
     def __exit__(self, *args, **kwargs):
         self.log.debug(f"Moving back to Directory --> '{self.old_dir}'")  # noqa: G004
         os.chdir(self.old_dir)
+
+for method_name in ["has_access", "safe_exists", "safe_relative_to"]:
+    if hasattr(Path, method_name) and not hasattr(pathlib.Path, method_name):
+        setattr(pathlib.Path, method_name, getattr(Path,method_name))

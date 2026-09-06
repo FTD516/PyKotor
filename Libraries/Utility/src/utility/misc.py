@@ -307,3 +307,7 @@ def is_float(val: str | float | Buffer | SupportsFloat | SupportsIndex) -> bool:
         return False
     else:
         return True
+        
+def ensure_directory_exists(path: Path | str) -> None:
+    #Ensure that a directory exists, creating it if necessary.
+    Path(path).mkdir(parents=True, exist_ok=True)

@@ -262,15 +262,23 @@ class ModInstaller:
         filepath: os.PathLike | str,
         description: str,
     ) -> CaseAwarePath:
-        source_roots = [self.patch_data_path]
-        if self.mod_path != self.patch_data_path:
-            source_roots.append(self.mod_path)
+        all_pooled_mod_locations = [self.mod_path, self.patch_data_path, self.tslpatchdata_path]
+        
+        #removingduplicates and None
+        source_roots = list(dict.fromkeys(modfolder for modfolder in all_pooled_mod_locations if modfolder is not None))
+        
+        # Isolating the relevant filename
+        filename = os.path.basename(os.fspath(filepath))
 
         for source_root in source_roots:
+            mod_path = source_root / filename
             try:
-                return self._resolve_file_path_within(source_root, filepath, description)
+                resolved = self._resolve_file_path_within(source_root, mod_path, description)
+                if resolved.exists():
+                    return resolved
             except ValueError:
                 continue
+                
         raise ValueError(f"Invalid {description} '{filepath}': path is outside the mod data folders.")
 
     @classmethod

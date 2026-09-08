@@ -2,8 +2,11 @@
 -r Libraries/PyKotor/requirements.txt
 -r Libraries/PyKotor/recommended.txt
 -r Libraries/PyKotorGL/requirements.txt
--r Libraries/PyKotorGL/optional.txt
+-r Libraries/Utility/requirements.txt
 -r Libraries/PyKotorFont/requirements.txt
+-r Libraries/PyKotor/recommended.txt
+-r Libraries/PyKotorGL/recommended.txt
+-r Libraries/PyKotorGL/optional.txt
 mypy
 ruff
 pylint

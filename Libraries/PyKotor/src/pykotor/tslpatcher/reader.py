@@ -153,6 +153,7 @@ class ConfigReader:
         cls,
         file_path: os.PathLike | str,
         logger: PatchLogger | None = None,
+        **kwargs,
     ):
         """Load PatcherConfig from an INI file path.
 

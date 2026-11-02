@@ -637,9 +637,9 @@ class Installation:
         self,
         file: os.PathLike | str,
     ):
-        filepath: Path = Path.pathify(file)
-        parent_folder = filepath.parent
-        rel_folderpath: str = str(parent_folder.relative_to(self.override_path())) if parent_folder.name else "."
+        filepath = Path(file)
+        override_path = Path(self.override_path())
+        rel_folderpath = filepath.parent.relative_to(override_path).as_posix()
         if rel_folderpath not in self._override:
             self.load_override(rel_folderpath)
 
@@ -649,11 +649,12 @@ class Installation:
             return
         resource = FileResource(*identifier.unpack(), filepath.stat().st_size, 0, filepath)
 
-        override_list: list[FileResource] = self._override[rel_folderpath]
-        if resource not in override_list:
-            override_list.append(resource)
-        else:
-            override_list[override_list.index(resource)] = resource
+        for folder, override_list in self._override.items():
+            if filepath.is_relative_to(override_path / folder):
+                if resource not in override_list:
+                    override_list.append(resource)
+                else:
+                    override_list[override_list.index(resource)] = resource
 
     def load_streammusic(
         self,

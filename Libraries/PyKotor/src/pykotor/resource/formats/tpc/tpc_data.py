@@ -483,6 +483,24 @@ class TPC:
             compressed_data += indices.to_bytes(4, byteorder="little")
         return compressed_data
 
+    @staticmethod
+    def rgba_to_dxt5(rgba_data: bytes, width: int, height: int) -> bytearray:
+        """Encode DXT5 alpha blocks alongside the existing DXT color encoder."""
+        colors = TPC.rgba_to_dxt1(rgba_data, width, height)
+        compressed = bytearray()
+        for block, (y, x) in enumerate(tpc_itertools.product(range(0, height, 4), range(0, width, 4))):
+            alpha = [rgba_data[(min(y + dy, height - 1) * width + min(x + dx, width - 1)) * 4 + 3]
+                     for dy, dx in tpc_itertools.product(range(4), range(4))]
+            high, low = max(alpha), min(alpha)
+            # Constant alpha selects endpoint zero, including equal endpoints.
+            palette = [high, low] + [((7 - index) * high + index * low) // 7 for index in range(1, 7)]
+            indices = sum(min(range(8), key=lambda entry: abs(value - palette[entry])) << (index * 3)
+                          for index, value in enumerate(alpha))
+            compressed.extend((high, low))
+            compressed.extend(indices.to_bytes(6, "little"))
+            compressed.extend(colors[block * 8:block * 8 + 8])
+        return compressed
+
     # region Convert to RGBA
     @staticmethod
     def _dxt_to_rgba(data: bytes, width: int, height: int, *, dxt5: bool) -> bytearray:

@@ -209,5 +209,6 @@ def preserve_gff(model: Any, generated: GFF, build: Callable[[Any], GFF]) -> GFF
         return result
 
     result = GFF(original.content)
+    result._binary_data = original._binary_data
     result.root = merge_struct(original.root, baseline.root, generated.root)
     return result

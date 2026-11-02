@@ -4,6 +4,7 @@ import difflib
 import math
 
 from copy import copy, deepcopy
+from dataclasses import dataclass
 from enum import Enum, IntEnum
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
@@ -249,6 +250,33 @@ class GFFCompareResult:
         return tuple(diff for diff in self.differences if diff.old_value is not None and diff.new_value is None)
 
 
+@dataclass(frozen=True, repr=False)
+class _GFFStructBinary:
+    """Immutable provenance shared by retained document snapshots."""
+
+    source: bytes
+    index: int
+    key: str
+    signature: bytes
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> _GFFStructBinary:
+        return self
+
+
+@dataclass(frozen=True, repr=False)
+class _GFFFieldBinary:
+    source: bytes
+    index: int
+    kind: GFFFieldType
+    label_index: int
+    offset: int
+    value: bytes
+    data: bytes
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> _GFFFieldBinary:
+        return self
+
+
 class GFF:
     """Represents the data of a GFF file."""
 
@@ -260,6 +288,7 @@ class GFF:
     ):
         self.content: GFFContent = content
         self.root: GFFStruct = GFFStruct(-1)
+        self._binary_data: bytes = b""
 
     def print_tree(
         self,
@@ -353,6 +382,7 @@ class _GFFField:
         self._field_type: GFFFieldType = field_type
         self._value: Any
         self.raw_data: bytes | None = None
+        self._binary: _GFFFieldBinary | None = None
         if field_type in self.INTEGER_TYPES:
             self._value: Any = int(value)
         else:
@@ -397,6 +427,7 @@ class GFFStruct:
         self._fields: dict[str, _GFFField] = {}
         self._field_order: list[tuple[str, _GFFField]] = []
         self._source_key: str | None = None
+        self._binary: _GFFStructBinary | None = None
 
     def __len__(
         self,
@@ -447,6 +478,7 @@ class GFFStruct:
         if field_type is GFFFieldType.String and existing.field_type() is field_type and existing.value() == value:
             return
         field = _GFFField(field_type, value)
+        field._binary = existing._binary
         for index, (name, record) in enumerate(self._field_order):
             if record is existing:
                 self._field_order[index] = (name, field)

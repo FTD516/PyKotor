@@ -5,7 +5,7 @@ import json
 from typing import TYPE_CHECKING
 
 from pykotor.common.misc import ResRef
-from pykotor.resource.formats.tlk.tlk_data import TLK
+from pykotor.resource.formats.tlk.tlk_data import TLK, TLKEntry
 from pykotor.resource.type import ResourceReader, ResourceWriter, autoclose
 from pykotor.tools.encoding import decode_bytes_with_fallbacks
 
@@ -30,13 +30,21 @@ class TLKJSONReader(ResourceReader):
         auto_close: bool = True,
     ) -> TLK:
         self._tlk = TLK()
-        self._json = json.loads(decode_bytes_with_fallbacks(self._reader.read_bytes(self._reader.size())))
+        self._json = json.loads(decode_bytes_with_fallbacks(self._reader.read_bytes(self._size)))
+        self._tlk.language_id = self._json.get("language", 0)
+        self._tlk.version = self._json.get("version", "V3.0")
 
         self._tlk.resize(len(self._json["strings"]))
         for string in self._json["strings"]:
             index = int(string["_index"])
-            self._tlk.entries[index].text = string["text"]
-            self._tlk.entries[index].voiceover = ResRef(string["soundResRef"])
+            self._tlk.entries[index] = TLKEntry(
+                string["text"],
+                ResRef(string["soundResRef"]),
+                flags=string.get("flags", 0x0007),
+                volume_variance=string.get("volumeVariance", 0),
+                pitch_variance=string.get("pitchVariance", 0),
+                sound_length_bits=string.get("soundLengthBits", 0),
+            )
 
         return self._tlk
 
@@ -49,7 +57,7 @@ class TLKJSONWriter(ResourceWriter):
     ):
         super().__init__(target)
         self._tlk: TLK = twoda
-        self._json = {"strings": []}
+        self._json = {"language": twoda.language_id, "version": twoda.version, "strings": []}
 
     @autoclose
     def write(
@@ -62,6 +70,10 @@ class TLKJSONWriter(ResourceWriter):
             string["_index"] = str(stringref)
             string["text"] = entry.text
             string["soundResRef"] = str(entry.voiceover)
+            string["flags"] = entry.flags
+            string["volumeVariance"] = entry.volume_variance
+            string["pitchVariance"] = entry.pitch_variance
+            string["soundLengthBits"] = entry.sound_length_bits
 
         json_dump = json.dumps(self._json, indent=4)
         self._writer.write_bytes(json_dump.encode())

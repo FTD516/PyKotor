@@ -287,6 +287,7 @@ class GFF:
         content: GFFContent = GFFContent.GFF,
     ):
         self.content: GFFContent = content
+        self._content_type_known: bool = True
         self.root: GFFStruct = GFFStruct(-1)
         self._binary_data: bytes = b""
 

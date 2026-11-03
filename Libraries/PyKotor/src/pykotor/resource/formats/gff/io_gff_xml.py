@@ -17,7 +17,7 @@ except (ImportError, ModuleNotFoundError):
 from pykotor.common.geometry import Vector3, Vector4
 from pykotor.common.language import LocalizedString
 from pykotor.common.misc import ResRef
-from pykotor.resource.formats.gff.gff_data import GFF, GFFFieldType, GFFList, GFFStruct
+from pykotor.resource.formats.gff.gff_data import GFF, GFFContent, GFFFieldType, GFFList, GFFStruct
 from pykotor.resource.type import ResourceReader, ResourceWriter, autoclose
 from utility.misc import indent
 
@@ -40,11 +40,11 @@ class GFFXMLReader(ResourceReader):
         self,
         auto_close: bool = True,
     ) -> GFF:
-        self._gff = GFF()
-
-        data = self._reader.read_bytes(self._reader.size()).decode()
-        xml_root: ElementTree.Element | None = ElementTree.fromstring(data).find("struct")  # noqa: S314
-        self._load_struct(self._gff.root, xml_root)
+        data = self._reader.read_bytes(self._size).decode()
+        xml = ElementTree.fromstring(data)  # noqa: S314
+        self._gff = GFF(GFFContent(xml.get("type", "GFF").upper().ljust(4)))
+        self._gff._content_type_known = "type" in xml.attrib
+        self._load_struct(self._gff.root, xml.find("struct"))
 
         return self._gff
 
@@ -147,13 +147,14 @@ class GFFXMLWriter(ResourceWriter):
         auto_close: bool = True,
     ):
         self.xml_root.tag = "gff3"
+        self.xml_root.set("type", self.gff.content.value.rstrip())
 
         xml_struct = ElementTree.Element("struct")
         self.xml_root.append(xml_struct)
         self._build_struct(self.gff.root, xml_struct)
 
         indent(self.xml_root)
-        self._writer.write_bytes(ElementTree.tostring(self.xml_root, encoding="unicode").encode("utf-8"))
+        self._writer.write_bytes(ElementTree.tostring(self.xml_root, encoding="utf-8").replace(b"\r", b"&#13;"))
 
     def _build_struct(
         self,

@@ -43,6 +43,8 @@ def detect_2da(
     def check(
         first4,
     ):
+        if first4 in ('"2DA', "2DA:"):
+            return ResourceType.TwoDA_CSV
         if first4 == "2DA ":
             return ResourceType.TwoDA
         if "{" in first4:

@@ -59,7 +59,7 @@ def detect_gff(
             with BinaryReader.from_file(source, offset) as reader:
                 file_format = check(reader.read_string(4))
         elif isinstance(source, (memoryview, bytes, bytearray)):
-            file_format = check(bytes(source[:4]).decode("ascii", "ignore"))
+            file_format = check(bytes(source[offset:offset + 4]).decode("ascii", "ignore"))
         elif isinstance(source, BinaryReader):
             file_format = check(source.read_string(4))
             source.skip(-4)

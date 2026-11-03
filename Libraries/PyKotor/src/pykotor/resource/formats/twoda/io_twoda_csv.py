@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 
 from typing import TYPE_CHECKING
 
@@ -29,11 +30,16 @@ class TwoDACSVReader(ResourceReader):
         auto_close: bool = True,
     ) -> TwoDA:
         self._twoda = TwoDA()
-        data: str = decode_bytes_with_fallbacks(self._reader.read_bytes(self._reader.size()))
+        data: str = decode_bytes_with_fallbacks(self._reader.read_bytes(self._size))
         _csv = csv.reader(io.StringIO(data))
 
         try:
-            headers: list[str] = [header.strip() for header in next(_csv)[1:]]
+            header_row = next(_csv)
+            # The otherwise unused row-label heading carries native semantics.
+            if header_row[0].startswith("2DA:"):
+                metadata = json.loads(header_row[0][4:])
+                self._twoda = TwoDA(version=metadata["version"], default=metadata["default"])
+            headers: list[str] = [header.strip() for header in header_row[1:]]
             if not headers:
                 msg = "CSV header is missing or not formatted correctly."
                 raise ValueError(msg)
@@ -81,7 +87,8 @@ class TwoDACSVWriter(ResourceWriter):
     ):
         headers: list[str] = self._twoda.get_headers()
 
-        insert: list[str] = [""]
+        metadata = {"version": self._twoda.version, "default": self._twoda.default}
+        insert: list[str] = ["2DA:" + json.dumps(metadata, ensure_ascii=False)]
         insert.extend(iter(headers))
         self._csv_writer.writerow(insert)
 
@@ -90,5 +97,5 @@ class TwoDACSVWriter(ResourceWriter):
             insert.extend(self._twoda.get_cell(index, header) for header in headers)
             self._csv_writer.writerow(insert)
 
-        data: bytes = self._csv_string.getvalue().encode("ascii")
+        data: bytes = self._csv_string.getvalue().encode("utf-8")
         self._writer.write_bytes(data)

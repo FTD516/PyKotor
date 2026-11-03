@@ -166,8 +166,8 @@ class Scene:
         self._screen_size: tuple[int, int] = (0, 0)
         self._viewport: tuple[int, int, int, int] = (0, 0, 0, 0)
         self.cursor: RenderObject = RenderObject("cursor")
-        self.blank_texture: Texture | None = None
-        self.blank_lightmap: Texture | None = None
+        self.blank_texture: Texture = Texture.from_color(255, 0, 255)
+        self.blank_lightmap: Texture = Texture.from_color(0, 0, 0)
 
         self.textures["NULL"] = Texture.from_color()
 
@@ -582,10 +582,6 @@ class Scene:
             - Render non-selected boundaries
             - Render cursor if shown.
         """
-        if self.blank_texture is None:
-            self.blank_texture = Texture.from_color(255, 0, 255)
-        if self.blank_lightmap is None:
-            self.blank_lightmap = Texture.from_color(0,0,0)
         #module_id_part = "" if self._module is None else f" from module '{self.module._id}'"
         #get_root_logger().debug("Refresh/build cache for scene%s", module_id_part)
         self.buildCache()
@@ -644,8 +640,6 @@ class Scene:
                 if name in self.textures:
                     continue  # Skip if already created
                 if tpc is None:
-                    if self.blank_lightmap is None or self.blank_texture is None:
-                        return
                     self.textures[name] = self.blank_lightmap if is_lightmap else self.blank_texture
                 else:
                     self.textures[name] = Texture.from_tpc(tpc)
@@ -828,7 +822,7 @@ class Scene:
         name: str,
         *,
         lightmap: bool = False,
-    ):
+    ) -> Texture:
         """Load texture data asynchronously."""
         if name in self.textures:
             return self.textures[name]

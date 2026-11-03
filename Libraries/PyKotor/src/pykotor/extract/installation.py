@@ -1484,7 +1484,7 @@ class Installation:
                 if case_resname not in case_resnames:
                     continue
                 case_resnames.remove(case_resname)
-                tpc: TPC = read_tpc(resource.data(), file_format=resource.restype())
+                tpc: TPC = read_tpc(resource.data(), file_format=resource.restype(), game=self.game())
                 textures[case_resname] = tpc
 
         def check_capsules(values: list[Capsule]):
@@ -1500,7 +1500,7 @@ class Installation:
                         continue
 
                     case_resnames.remove(case_resname)
-                    tpc: TPC = read_tpc(texture_data, file_format=tformat)
+                    tpc: TPC = read_tpc(texture_data, file_format=tformat, game=self.game())
                     textures[case_resname] = tpc
 
         def check_folders(resource_folders: list[Path]):
@@ -1518,7 +1518,7 @@ class Installation:
             for texture_file in queried_texture_files:
                 case_resnames.remove(texture_file.stem.casefold())
                 texture_data: bytes = BinaryReader.load_file(texture_file)
-                tpc = read_tpc(texture_data, file_format=ResourceType.from_extension(texture_file.suffix))
+                tpc = read_tpc(texture_data, file_format=ResourceType.from_extension(texture_file.suffix), game=self.game())
                 textures[texture_file.stem] = tpc
 
         function_map: dict[SearchLocation, Callable] = {

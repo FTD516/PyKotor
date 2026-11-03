@@ -6,34 +6,40 @@ import glm
 import numpy as np
 
 from OpenGL.GL import (
+    GL_CLAMP_TO_EDGE,
     GL_LINEAR,
+    GL_LINEAR_MIPMAP_LINEAR,
+    GL_NEAREST,
+    GL_NEAREST_MIPMAP_NEAREST,
     GL_NO_ERROR,
     GL_REPEAT,
     GL_RGB,
     GL_TEXTURE_2D,
     GL_TEXTURE_MAG_FILTER,
     GL_TEXTURE_MIN_FILTER,
+    GL_TEXTURE_MAX_LEVEL,
     GL_TEXTURE_WRAP_S,
     GL_TEXTURE_WRAP_T,
     GL_UNSIGNED_BYTE,
+    GL_UNPACK_ALIGNMENT,
     glBindTexture,
     glGenTextures,
     glGetError,
+    glGetIntegerv,
     glGetUniformLocation,
     glTexImage2D,
     glTexParameteri,
+    glPixelStorei,
     glUniform3fv,
     glUniform4fv,
     glUniformMatrix4fv,
     shaders,
 )
-from OpenGL.GL.framebufferobjects import glGenerateMipmap
 from OpenGL.GL.shaders import GL_FALSE
 from OpenGL.GLU import gluErrorString
 from OpenGL.raw.GL.EXT.texture_compression_s3tc import GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, GL_COMPRESSED_RGB_S3TC_DXT1_EXT
 from OpenGL.raw.GL.VERSION.GL_1_0 import (
     GL_LINEAR,
-    GL_NEAREST_MIPMAP_LINEAR,
     GL_REPEAT,
     GL_RGB,
     GL_RGBA,
@@ -196,27 +202,32 @@ class Texture:
         self._id: int = tex_id
 
     @classmethod
-    def from_tpc(cls, tpc: TPC) -> Texture:
-        width, height, tpc_format, data = tpc.get(0)
-        image_size = len(data)
-
+    def from_tpc(cls, tpc: TPC, *, image: int = 0) -> Texture:
+        settings = tpc.effective_txi.settings(game=tpc.header.game).texture
+        levels = tpc.mipmap_count(image) if settings["mipmap"] else 1
         gl_id = glGenTextures(1)
         glBindTexture(GL_TEXTURE_2D, gl_id)
-
-        if tpc_format == TPCTextureFormat.DXT1:
-            glCompressedTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_RGB_S3TC_DXT1_EXT, width, height, 0, image_size, data)
-        if tpc_format == TPCTextureFormat.DXT5:
-            glCompressedTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, width, height, 0, image_size, data)
-        if tpc_format == TPCTextureFormat.RGB:
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data)
-        if tpc_format == TPCTextureFormat.RGBA:
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data)
-
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-        glGenerateMipmap(GL_TEXTURE_2D)
+        alignment = glGetIntegerv(GL_UNPACK_ALIGNMENT)
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+        for level in range(levels):
+            width, height, tpc_format, data = tpc.get(level, image=image)
+            if tpc_format in (TPCTextureFormat.DXT1, TPCTextureFormat.DXT5):
+                compressed_format = (GL_COMPRESSED_RGB_S3TC_DXT1_EXT if tpc_format == TPCTextureFormat.DXT1
+                                     else GL_COMPRESSED_RGBA_S3TC_DXT5_EXT)
+                glCompressedTexImage2D(GL_TEXTURE_2D, level, compressed_format, width, height, 0, len(data), data)
+            else:
+                output = TPCTextureFormat.RGB if tpc_format in (TPCTextureFormat.Greyscale, TPCTextureFormat.RGB) else TPCTextureFormat.RGBA
+                pixels = tpc.convert(output, level, image=image).data
+                pixel_format = GL_RGB if output == TPCTextureFormat.RGB else GL_RGBA
+                glTexImage2D(GL_TEXTURE_2D, level, pixel_format, width, height, 0, pixel_format, GL_UNSIGNED_BYTE, pixels)
+        glPixelStorei(GL_UNPACK_ALIGNMENT, alignment)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, levels - 1)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE if settings["clamp"] & 1 else GL_REPEAT)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE if settings["clamp"] & 2 else GL_REPEAT)
+        filtered = GL_LINEAR if settings["filter"] else GL_NEAREST
+        mip_filtered = GL_LINEAR_MIPMAP_LINEAR if settings["filter"] else GL_NEAREST_MIPMAP_NEAREST
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, mip_filtered if settings["mipmap"] else filtered)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtered)
 
         return Texture(gl_id)
 

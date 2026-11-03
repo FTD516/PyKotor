@@ -14,8 +14,11 @@ import struct
 from dataclasses import dataclass, field
 from typing import Iterable
 
+from pykotor.common.misc import Game
+
 _INT = re.compile(rb"[ \t\r\v\f]*([+-]?[0-9]+)")
 _FLOAT = re.compile(rb"[ \t\r\v\f]*([+-]?(?:(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?|inf(?:inity)?|nan))", re.I)
+_LINE_END = re.compile(rb"\r\n|\r|\n")
 _FIELD = re.compile(rb"[ \t\r\v\f]*([^ \t\r\v\f]+)(?:[ \t\r\v\f]+(.*))?", re.S)
 _LISTS = {"upperleftcoords": 3, "lowerrightcoords": 3, "channelscale": 1, "channeltranslate": 1}
 _SHORTS = {"filerange", "defaultwidth", "defaultheight", "downsamplemax", "downsamplemin", "clamp", "numx", "numy"}
@@ -26,6 +29,9 @@ _CONTROLLERS = {"water", "life", "perlin", "arturo", "wave", "cycle", "random", 
 
 
 def _integer(value: bytes) -> int:
+    token = value.split()[0].lower() if value.split() else b""
+    if token in (b"true", b"false"):
+        return int(token == b"true")
     match = _INT.match(value)
     if match is None:
         raise ValueError(f"Invalid TXI integer: {value!r}")
@@ -46,8 +52,8 @@ def _floats(value: bytes, count: int) -> tuple[float, ...]:
 
 
 def _line(data: bytes, start: int) -> tuple[bytes, int]:
-    end = data.find(b"\n", start)
-    end = len(data) if end < 0 else end + 1
+    ending = _LINE_END.search(data, start)
+    end = ending.end() if ending else len(data)
     return data[start:end], end
 
 
@@ -78,6 +84,7 @@ class TXISettings:
         "isdiffusebumpmap": True, "isspecularbumpmap": True,
         "isenvironmentmapped": False, "temporary": False, "useglobalalpha": False,
         "cube": False, "mipmap": True, "filter": True, "maptexelstopixels": False,
+        "texture3d": False,
         "specularcolor": (1.0, 1.0, 1.0),
     })
     material: dict = field(default_factory=lambda: {
@@ -118,7 +125,7 @@ class TXI:
             start = position
             line, position = _line(self._data, position)
             line_end = position
-            visible = line.split(b"\0", 1)[0].rstrip(b"\n")
+            visible = line.split(b"\0", 1)[0].rstrip(b"\r\n")
             match = _FIELD.fullmatch(visible)
             keyword = match[1].lower().decode("latin-1") if match else ""
             operand = (match[2] or b"") if match else b""
@@ -146,7 +153,7 @@ class TXI:
                     while position < len(self._data) and (count is None or len(items) < count):
                         item, position = _line(self._data, position)
                         visible_item = item.split(b"\0", 1)[0].strip()
-                        if count is None and visible_item.lower() == b"endlist":
+                        if count is None and visible_item.startswith(b"endlist"):
                             terminated = True
                             break
                         parsed = _floats(visible_item, components)
@@ -163,6 +170,7 @@ class TXI:
 
     def settings(self, *, game: int = 2) -> TXISettings:
         state = TXISettings()
+        is_k2 = Game(game).is_k2()
         for record in self.records:
             key, value = record.keyword, record.operand
             token = value.split()[0] if value.split() else b""
@@ -178,12 +186,14 @@ class TXI:
                 state.texture[key] = _integer(value)
             elif key == "specularcolor":
                 state.texture[key] = _floats(value, 3)
-            elif key == "proceduretype":
+            elif key == "proceduretype" and token:
                 name = token.decode("latin-1")
                 state.controller = None
                 state.controller_settings = {}
-                if name in _CONTROLLERS and (game == 2 or name not in {"dirty", "dirty2", "dirty3"}):
+                if name in _CONTROLLERS and (is_k2 or name not in {"dirty", "dirty2", "dirty3"}):
                     state.controller = name
+                    if name in {"dirty", "dirty2", "dirty3"}:
+                        state.texture["texture3d"] = True
                     state.controller_settings = {
                         "distort": 0, "distortangle": 1, "distortionamplitude": 5.0,
                         "speed": 1.0, "channelscale": [], "channeltranslate": [],
@@ -196,7 +206,7 @@ class TXI:
                                                          anglecyclespeed=2.864788770675659)
                     elif name == "arturo":
                         state.controller_settings.update(arturowidth=15, arturoheight=15)
-            elif key in {"bumpmaptexture", "bumpyshinytexture", "envmaptexture"}:
+            elif key in {"bumpmaptexture", "bumpyshinytexture", "envmaptexture"} and token:
                 state.material[key] = token.decode("latin-1")
             elif key == "blending":
                 if token in (b"additive", b"punchthrough"):
@@ -215,7 +225,8 @@ class TXI:
                 elif key == "numchars":
                     state.font[key] = _integer(value)
                 else:
-                    state.font[key] = record.values
+                    state.font[key] = (record.values if record.counted
+                                       else record.values + state.font[key][len(record.values):])
             elif state.controller is not None:
                 fields = state.controller_settings
                 if key in {"distort", "distortangle"}:
@@ -223,12 +234,15 @@ class TXI:
                 elif key in {"distortionamplitude", "speed"}:
                     fields[key] = _floats(value, 1)[0]
                 elif key in {"channelscale", "channeltranslate"}:
-                    fields[key] = list(record.values)
+                    fields[key] = (list(record.values) if record.counted
+                                   else list(record.values) + fields[key][len(record.values):])
                 elif re.fullmatch(r"(?:channelscale|channeltranslate)[0-3]", key):
                     name, index = key[:-1], int(key[-1])
-                    # Indexed channel access extends the corresponding native array.
-                    fields[name].extend([1.0 if name == "channelscale" else 0.0] * max(0, index + 1 - len(fields[name])))
-                    fields[name][index] = _floats(value, 1)[0]
+                    channel_value = _floats(value, 1)[0]
+                    if channel_value >= 0.0:
+                        if not fields[name]:
+                            fields[name] = [1.0] * 4
+                        fields[name][index] = channel_value
                 elif state.controller == "cycle" and key == "fps":
                     fields[key] = _floats(value, 1)[0]
                 elif state.controller == "water" and key in {"waterwidth", "waterheight"}:
@@ -256,7 +270,7 @@ class TXI:
         end = self._insertion_offset()
         old = self._data[:end].splitlines(keepends=True)
         new = encoded.rstrip(b"\0").splitlines(keepends=True)
-        normalize = lambda line: line.replace(b"\r\n", b"\n")
+        normalize = lambda line: re.sub(rb"\r\n|\r", b"\n", line)
         matcher = difflib.SequenceMatcher(a=[normalize(line) for line in old],
                                          b=[normalize(line) for line in new], autojunk=False)
         result = []
@@ -265,12 +279,12 @@ class TXI:
             if operation == "equal":
                 result.extend(old[i:j])
             elif operation in ("replace", "insert"):
-                result.extend(line.rstrip(b"\r\n") + newline if line.endswith(b"\n") else line for line in new[k:n])
+                result.extend(line.rstrip(b"\r\n") + newline if line.endswith((b"\r", b"\n")) else line for line in new[k:n])
         self._data = b"".join(result) + self._data[end:]
 
     def _newline(self) -> bytes:
-        index = self._data.find(b"\n")
-        return b"\r\n" if index > 0 and self._data[index - 1] == 13 else b"\n"
+        ending = _LINE_END.search(self._data)
+        return ending[0] if ending else b"\n"
 
     def set(self, keyword: str, value: str, *, occurrence: int = -1) -> None:
         """Edit one scalar occurrence, or append an absent command without sorting.
@@ -288,7 +302,7 @@ class TXI:
         matches = [r for r in self.records if r.keyword == keyword.lower()]
         if not matches:
             end = self._insertion_offset()
-            separator = b"" if end == 0 or self._data[end - 1:end] == b"\n" else self._newline()
+            separator = b"" if end == 0 or self._data[end - 1:end] in (b"\r", b"\n") else self._newline()
             self._data = (self._data[:end] + separator + keyword.encode("ascii") + b" " + encoded
                           + self._newline() + self._data[end:])
             return
@@ -296,7 +310,7 @@ class TXI:
         line = self._data[record.start:record.line_end]
         match = re.match(rb"([ \t]*[^ \t\r\n\0]+)([ \t]*)(.*)", line, re.S)
         body = match[3]
-        ending = b"\r\n" if body.endswith(b"\r\n") else b"\n" if body.endswith(b"\n") else b""
+        ending = b"\r\n" if body.endswith(b"\r\n") else body[-1:] if body.endswith((b"\r", b"\n")) else b""
         body = body[:-len(ending)] if ending else body
         suffix_match = re.search(rb"[ \t]+(?:#|//).*$|\0.*$|[ \t\r]+$", body, re.S)
         suffix = suffix_match[0] if suffix_match else b""
@@ -324,13 +338,13 @@ class TXI:
             prefix = keyword.encode("ascii")
             space = b" "
             start = end = self._insertion_offset()
-            before = b"" if start == 0 or self._data[start - 1:start] == b"\n" else newline
+            before = b"" if start == 0 or self._data[start - 1:start] in (b"\r", b"\n") else newline
         else:
             line = self._data[record.start:record.line_end]
             match = re.match(rb"([ \t]*[^ \t\r\n\0]+)([ \t]*)", line)
             prefix, space = match[1], match[2] or b" "
             start, end, before = record.start, record.end, b""
-            newline = b"\r\n" if line.endswith(b"\r\n") else b"\n"
+            newline = b"\r\n" if line.endswith(b"\r\n") else line[-1:] if line.endswith((b"\r", b"\n")) else newline
         if binary:
             replacement = prefix + space + str(len(items)).encode("ascii") + b" b" + newline
             replacement += struct.pack(f"<{len(flattened)}f", *flattened)

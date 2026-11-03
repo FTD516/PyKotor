@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import NamedTuple
 
+from pykotor.common.misc import Game
 from pykotor.common.stream import BinaryReader
 from pykotor.resource.type import ResourceType
 from pykotor.resource.formats.txi import TXI
@@ -30,7 +31,7 @@ class TPCConvertResult(NamedTuple):
 
 @dataclass
 class TPCHeader:
-    """Stored header fields; these are independent of interpreted frame mips."""
+    """Stored fields and a nonserialized game hint for native flag interpretation."""
 
     compressed_size: int = 0
     alpha_mean_bits: int = 0
@@ -39,6 +40,7 @@ class TPCHeader:
     encoding: int = 2
     mipmap_count: int = 1
     reserved: bytes = bytes(114)
+    game: int = 1
 
     @property
     def alpha_mean(self) -> float:
@@ -48,19 +50,32 @@ class TPCHeader:
     def alpha_mean(self, value: float) -> None:
         self.alpha_mean_bits = struct.unpack("<I", struct.pack("<f", value))[0]
 
+    def texture_format(self) -> TPCTextureFormat:
+        """Interpret native format bits without replacing the stored flag byte."""
+        if Game(self.game).is_k1() and self.compressed_size and self.encoding & 0x10:
+            return TPCTextureFormat.PVRTC4_RGBA if self.encoding & 4 else TPCTextureFormat.PVRTC4_RGB
+        encoding = next((bit for bit in (1, 2, 4) if self.encoding & bit), 0)
+        formats = ({2: TPCTextureFormat.DXT1, 4: TPCTextureFormat.DXT5} if self.compressed_size
+                   else {1: TPCTextureFormat.Greyscale, 2: TPCTextureFormat.RGB, 4: TPCTextureFormat.RGBA})
+        if encoding not in formats:
+            raise ValueError("Unsupported TPC encoding.")
+        return formats[encoding]
+
     def image_size(self) -> int:
         """Native resource extent, calculated before interpreting embedded TXI."""
         if self.width <= 0 or self.height <= 0:
             raise ValueError("TPC dimensions must be positive.")
-        if self.encoding not in (1, 2, 4) or self.compressed_size and self.encoding == 1:
-            raise ValueError("Unsupported TPC encoding.")
+        texture_format = self.texture_format()
         if not self.compressed_size:
-            bpp = {1: 1, 2: 3, 4: 4}[self.encoding]
+            bpp = texture_format.bytes_per_pixel()
             return sum((self.width >> level) * (self.height >> level) * bpp
                        for level in range(self.mipmap_count))
+        if Game(self.game).is_k1() and self.encoding & 0x10:
+            # K1 PVRTC stores the entire chain, not one DXT base level per face.
+            return self.compressed_size
         faces = 6 if self.height // self.width == 6 else 1
         height = self.height // faces
-        block = 8 if self.encoding == 2 else 16
+        block = 8 if texture_format == TPCTextureFormat.DXT1 else 16
         return faces * (self.compressed_size + sum(
             (((self.width >> level) + 3) // 4) * (((height >> level) + 3) // 4) * block
             for level in range(1, self.mipmap_count)))
@@ -93,6 +108,8 @@ class TPCImage:
 
 
 def _image_size(width: int, height: int, texture_format: TPCTextureFormat) -> int:
+    if texture_format in (TPCTextureFormat.PVRTC4_RGB, TPCTextureFormat.PVRTC4_RGBA):
+        return max(8, width) * max(8, height) // 2
     if texture_format in (TPCTextureFormat.DXT1, TPCTextureFormat.DXT5):
         block = 8 if texture_format == TPCTextureFormat.DXT1 else 16
         return ((width + 3) // 4) * ((height + 3) // 4) * block
@@ -152,7 +169,7 @@ class TPC:
         return self._texture_format
 
     def is_compressed(self) -> bool:
-        return self._texture_format in (TPCTextureFormat.DXT1, TPCTextureFormat.DXT5)
+        return self._texture_format.is_compressed()
 
     def images(self) -> tuple[TPCImage, ...]:
         """Describe image ranges without moving, decoding, or repacking bytes.
@@ -161,15 +178,25 @@ class TPC:
         discarding data while loading. Raw cycle ranges reflect the renderer's
         shared-mip/overlapping-base interpretation; they are not tiled atlases.
         """
-        settings = self.effective_txi.settings()
+        settings = self.effective_txi.settings(game=self.header.game)
         width, height = self.header.width, self.header.height
         levels = self.header.mipmap_count
+        if self._texture_format in (TPCTextureFormat.PVRTC4_RGB, TPCTextureFormat.PVRTC4_RGBA) and not settings.texture["cube"]:
+            # K1 uploads packed-chain mips from the byte extent, ignoring the
+            # header mip count. Small levels still occupy at least 32 bytes.
+            levels, remaining = 0, len(self._image_data)
+            for level in range(max(width, height).bit_length()):
+                size = _image_size(max(1, width >> level), max(1, height >> level), self._texture_format)
+                if size > remaining:
+                    break
+                levels += 1
+                remaining -= size
         kind, count, stride = "image", 1, 0
         if settings.texture["cube"]:
             kind, count, height = "face", 6, height // 6
             stride = sum(_image_size(max(1, width >> level), max(1, height >> level), self._texture_format)
                          for level in range(levels))
-            if self.is_compressed():
+            if self._texture_format in (TPCTextureFormat.DXT1, TPCTextureFormat.DXT5):
                 stride = self.header.compressed_size + sum(
                     _image_size(width >> level, height >> level, self._texture_format)
                     for level in range(1, levels))
@@ -270,12 +297,19 @@ class TPC:
         if self._texture_format == convert_format and not y_flip:  # Is conversion needed?
             return TPCConvertResult(width, height, bytearray(raw_data))
 
+        source_format = self._texture_format
+        if source_format in (TPCTextureFormat.PVRTC4_RGB, TPCTextureFormat.PVRTC4_RGBA):
+            from pykotor.resource.formats.tpc._pvrtc import decode_pvrtc4
+
+            raw_data = decode_pvrtc4(raw_data, width, height, alpha=source_format == TPCTextureFormat.PVRTC4_RGBA)
+            source_format = TPCTextureFormat.RGBA
+
         if y_flip:
             bytes_per_pixel = 0
-            if self._texture_format == TPCTextureFormat.Greyscale:
+            if source_format == TPCTextureFormat.Greyscale:
                 bytes_per_pixel = 1
-            elif self._texture_format in {TPCTextureFormat.RGB, TPCTextureFormat.RGBA}:
-                bytes_per_pixel = 4 if self._texture_format == TPCTextureFormat.RGBA else 3
+            elif source_format in {TPCTextureFormat.RGB, TPCTextureFormat.RGBA}:
+                bytes_per_pixel = 4 if source_format == TPCTextureFormat.RGBA else 3
             # If the image needs to be flipped and it's an uncompressed format
             if bytes_per_pixel > 0:
                 raw_data = bytearray(self.flip_image_data(raw_data, width, height, bytes_per_pixel))
@@ -285,36 +319,36 @@ class TPC:
             raise ValueError("Compression must be requested explicitly; convert() decodes pixels.")
         data: bytearray = bytearray(raw_data)
         if convert_format == TPCTextureFormat.Greyscale:
-            if self._texture_format == TPCTextureFormat.DXT5:
+            if source_format == TPCTextureFormat.DXT5:
                 rgba_data = TPC._dxt5_to_rgba(raw_data, width, height)
                 data = TPC._rgba_to_grey(rgba_data, width, height)
-            elif self._texture_format == TPCTextureFormat.DXT1:
+            elif source_format == TPCTextureFormat.DXT1:
                 rgba_data = TPC._dxt1_to_rgba(raw_data, width, height)
                 data = TPC._rgba_to_grey(rgba_data, width, height)
-            elif self._texture_format == TPCTextureFormat.RGBA:
+            elif source_format == TPCTextureFormat.RGBA:
                 data = TPC._rgba_to_grey(raw_data, width, height)
-            elif self._texture_format == TPCTextureFormat.RGB:
+            elif source_format == TPCTextureFormat.RGB:
                 rgba_data = TPC._rgb_to_rgba(raw_data, width, height)
                 data = TPC._rgba_to_grey(rgba_data, width, height)
 
         if convert_format == TPCTextureFormat.RGBA:
-            if self._texture_format == TPCTextureFormat.DXT5:
+            if source_format == TPCTextureFormat.DXT5:
                 data = TPC._dxt5_to_rgba(raw_data, width, height)
-            elif self._texture_format == TPCTextureFormat.DXT1:
+            elif source_format == TPCTextureFormat.DXT1:
                 data = TPC._dxt1_to_rgba(raw_data, width, height)
-            elif self._texture_format == TPCTextureFormat.RGB:
+            elif source_format == TPCTextureFormat.RGB:
                 data = TPC._rgb_to_rgba(raw_data, width, height)
-            elif self._texture_format == TPCTextureFormat.Greyscale:
+            elif source_format == TPCTextureFormat.Greyscale:
                 data = TPC._grey_to_rgba(raw_data, width, height)
 
         if convert_format == TPCTextureFormat.RGB:
-            if self._texture_format == TPCTextureFormat.DXT5:
+            if source_format == TPCTextureFormat.DXT5:
                 data = TPC._dxt5_to_rgb(raw_data, width, height)
-            elif self._texture_format == TPCTextureFormat.DXT1:
+            elif source_format == TPCTextureFormat.DXT1:
                 data = TPC._dxt1_to_rgb(raw_data, width, height)
-            elif self._texture_format == TPCTextureFormat.RGBA:
+            elif source_format == TPCTextureFormat.RGBA:
                 data = TPC._rgba_to_rgb(raw_data, width, height)
-            elif self._texture_format == TPCTextureFormat.Greyscale:
+            elif source_format == TPCTextureFormat.Greyscale:
                 rgba_data = TPC._grey_to_rgba(raw_data, width, height)
                 data = TPC._rgba_to_rgb(rgba_data, width, height)
 
@@ -383,11 +417,12 @@ class TPC:
             raise ValueError("An ordinary texture has one image; a cube has six faces.")
         if kind == "frame" and (numx <= 0 or numy <= 0 or len(images) != numx * numy):
             raise ValueError("Cycle image count must match the frame grid.")
-        compressed = texture_format in (TPCTextureFormat.DXT1, TPCTextureFormat.DXT5)
+        compressed = texture_format.is_compressed()
         if kind == "frame" and not compressed:
             raise ValueError("Raw cycle textures store an atlas; use set_data() and an explicit cycle TXI.")
         encoding = {TPCTextureFormat.Greyscale: 1, TPCTextureFormat.RGB: 2, TPCTextureFormat.RGBA: 4,
-                    TPCTextureFormat.DXT1: 2, TPCTextureFormat.DXT5: 4}[texture_format]
+                    TPCTextureFormat.DXT1: 2, TPCTextureFormat.DXT5: 4,
+                    TPCTextureFormat.PVRTC4_RGB: 0x12, TPCTextureFormat.PVRTC4_RGBA: 0x14}[texture_format]
         chunks = []
         for mips in images:
             if len(mips) != levels:
@@ -406,9 +441,13 @@ class TPC:
         stored_width = width * numx if kind == "frame" else width
         stored_height = height * (6 if kind == "face" else numy if kind == "frame" else 1)
         declared = declared_mipmap_count if declared_mipmap_count is not None else (1 if kind == "frame" else levels)
-        header = TPCHeader(0, self.header.alpha_mean_bits, stored_width, stored_height, encoding, declared, self.header.reserved)
+        header = TPCHeader(0, self.header.alpha_mean_bits, stored_width, stored_height, encoding, declared,
+                           self.header.reserved, self.header.game)
         payload = b"".join(chunks)
-        if compressed:
+        if texture_format in (TPCTextureFormat.PVRTC4_RGB, TPCTextureFormat.PVRTC4_RGBA):
+            header.game = Game.K1 if Game(header.game).is_k2() else header.game
+            header.compressed_size = len(payload)
+        elif compressed:
             faces = 6 if stored_height // stored_width == 6 else 1
             if len(payload) % faces:
                 raise ValueError("Image size cannot be represented by this TPC header geometry.")
@@ -542,7 +581,9 @@ class TPC:
                         code = (indices >> (2 * i)) & 3
                         if bx + x >= width or by + y >= height:
                             continue
-                        a = 0 if not dxt5 and c0 <= c1 and code == 3 else alpha[i]
+                        # TPC's DXT1 format is RGB (GL_COMPRESSED_RGB_S3TC_DXT1),
+                        # so its fourth color is opaque black, not transparent.
+                        a = alpha[i]
                         offset = ((by + y) * width + bx + x) * 4
                         result[offset:offset + 4] = bytes((*colors[code], a))
         return result
@@ -764,6 +805,11 @@ class TPCTextureFormat(IntEnum):
     RGBA = 2
     DXT1 = 3
     DXT5 = 4
+    PVRTC4_RGB = 5
+    PVRTC4_RGBA = 6
+
+    def is_compressed(self) -> bool:
+        return self in (self.DXT1, self.DXT5, self.PVRTC4_RGB, self.PVRTC4_RGBA)
 
     def bytes_per_pixel(self):
         bytes_per_pixel = 0

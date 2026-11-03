@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pykotor.common.misc import Game
 from pykotor.common.stream import BinaryReader
 from pykotor.resource.formats.tpc.io_bmp import TPCBMPWriter
 from pykotor.resource.formats.tpc.io_tga import TPCTGAReader, TPCTGAWriter
@@ -36,7 +37,7 @@ def _source_bytes(source: SOURCE_TYPES, offset: int, size: int | None) -> bytes:
         return reader.read_bytes(reader.remaining() if size is None else size)
 
 
-def detect_tpc(source: SOURCE_TYPES, offset: int = 0) -> ResourceType:
+def detect_tpc(source: SOURCE_TYPES, offset: int = 0, *, game: int = 1) -> ResourceType:
     """Classify a header structurally, never by assumed zero padding.
 
     TPC has no magic. An ambiguous byte sequence returns INVALID; callers with
@@ -47,8 +48,10 @@ def detect_tpc(source: SOURCE_TYPES, offset: int = 0) -> ResourceType:
     if len(raw) >= 128:
         values = struct.unpack_from("<IIHHBB", raw)
         size, _, width, height, encoding, _ = values
-        if width and height and encoding in (1, 2, 4) and not (size and encoding == 1):
-            header = TPCHeader(*values, raw[14:128])
+        packed = Game(game).is_k1() and size and encoding & 0x10
+        channel = next((bit for bit in (1, 2, 4) if encoding & bit), 0)
+        if width and height and (packed or channel) and not (size and channel == 1 and not packed):
+            header = TPCHeader(*values, raw[14:128], game)
             tpc = 128 + header.image_size() <= len(raw)
     tga = False
     if len(raw) >= 18:
@@ -64,11 +67,13 @@ def detect_tpc(source: SOURCE_TYPES, offset: int = 0) -> ResourceType:
 
 
 def read_tpc(source: SOURCE_TYPES, offset: int = 0, size: int | None = None,
-             txi_source: SOURCE_TYPES | None = None, *, file_format: ResourceType | None = None) -> TPC:
+             txi_source: SOURCE_TYPES | None = None, *, file_format: ResourceType | None = None, game: int = 1) -> TPC:
     """Read storage separately from the optional external TXI selection.
 
     An explicit format (or .tpc/.tga filename) is authoritative. A missing
     explicitly supplied TXI raises; automatic sidecar discovery is optional.
+    game=2 selects K2's flag interpretation; standalone reading defaults to
+    K1, whose format set also includes PVRTC packed chains.
     """
     if file_format is None and isinstance(source, (str, os.PathLike)):
         suffix = Path(source).suffix.lower()
@@ -76,13 +81,14 @@ def read_tpc(source: SOURCE_TYPES, offset: int = 0, size: int | None = None,
             file_format = ResourceType.TPC if suffix == ".tpc" else ResourceType.TGA
     raw = _source_bytes(source, offset, size)
     if file_format is None:
-        file_format = detect_tpc(raw)
+        file_format = detect_tpc(raw, game=game)
     if file_format == ResourceType.TPC:
-        texture = TPCBinaryReader(raw).load()
+        texture = TPCBinaryReader(raw, game=game).load()
     elif file_format == ResourceType.TGA:
         texture = TPCTGAReader(raw).load()
     else:
         raise ValueError("Cannot identify this texture unambiguously; supply TPC or TGA explicitly.")
+    texture.header.game = game
     if txi_source is None and isinstance(source, (str, os.PathLike)):
         candidate = CaseAwarePath.get_case_sensitive_path(Path(source).with_suffix(".txi"))
         if candidate.is_file():

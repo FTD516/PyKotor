@@ -499,6 +499,12 @@ class TPC:
         return colors[0][:3], colors[-1][:3]
 
     @staticmethod
+    def rgba_to_pvrtc4(rgba_data: bytes, width: int, height: int, *, alpha: bool = True) -> bytearray:
+        from pykotor.resource.formats.tpc._pvrtc import encode_pvrtc4
+
+        return encode_pvrtc4(rgba_data, width, height, alpha=alpha)
+
+    @staticmethod
     def rgba_to_dxt1(
         rgba_data: bytes,
         width: int,

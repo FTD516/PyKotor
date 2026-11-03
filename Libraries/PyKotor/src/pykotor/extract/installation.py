@@ -20,7 +20,7 @@ from pykotor.extract.talktable import TalkTable
 from pykotor.resource.formats.gff import read_gff
 from pykotor.resource.formats.gff.gff_data import GFFContent, GFFFieldType, GFFList, GFFStruct
 from pykotor.resource.formats.txi import read_txi
-from pykotor.resource.formats.tpc import TPC, read_tpc
+from pykotor.resource.formats.tpc import TPC, TPCTextureFormat, read_tpc
 from pykotor.resource.formats.twoda.twoda_auto import read_2da
 from pykotor.resource.type import ResourceType
 from pykotor.tools.misc import is_capsule_file, is_erf_file, is_mod_file, is_rim_file
@@ -1540,7 +1540,7 @@ class Installation:
 
         # TXI is a separate resource lookup. A sidecar in Override can override
         # the footer of a TPC found in a texture pack, including an empty sidecar.
-        queries = [ResourceIdentifier(name, ResourceType.TXI) for name, texture in textures.items() if texture is not None]
+        queries = [ResourceIdentifier(name, ResourceType.TXI) for name in textures]
         locations = self.locations(queries, order, capsules=capsules, folders=folders)
         for query, matches in locations.items():
             if not matches:
@@ -1550,8 +1550,40 @@ class Installation:
                 reader.seek(location.offset)
                 document = read_txi(reader, size=location.size)
             texture = textures[query.resname]
-            texture.external_txi = document
-            texture.external_txi_source = str(location.filepath)
+            settings = document.settings(game=self.game())
+            if texture is None and (settings.controller is not None or settings.texture["filerange"] > 0):
+                width, height = settings.texture["defaultwidth"], settings.texture["defaultheight"]
+                texture = TPC()
+                texture.set_single(width, height, bytes([127]) * (width * height * 4), TPCTextureFormat.RGBA)
+                texture.header.game = self.game()
+                textures[query.resname] = texture
+            if texture is not None:
+                texture.external_txi = document
+                texture.external_txi_source = str(location.filepath)
+
+        for name, texture in tuple(textures.items()):
+            if texture is None:
+                continue
+            document = texture.effective_txi
+            settings = document.settings(game=self.game())
+            count = settings.texture["filerange"]
+            if count > 0:
+                # Native file ranges accept both name0 and name00 spellings.
+                names = [(f"{name}{index}", f"{name}0{index}") for index in range(count)]
+                sources = self.textures([name for pair in names for name in pair], order, capsules=capsules, folders=folders)
+                images = []
+                for pair in names:
+                    image = next((sources[name] for name in pair if sources[name] is not None), None)
+                    if image is None:
+                        raise FileNotFoundError(f"Missing file-range texture: {pair[0]} or {pair[1]}")
+                    view = copy(image)
+                    view.embedded_txi, view.external_txi = type(document)(), None
+                    width, height, pixels = view.convert(TPCTextureFormat.RGBA)
+                    images.append(bytes(pixels))
+                composite = copy(texture)
+                composite.set_single(width, height * count, b"".join(images), TPCTextureFormat.RGBA)
+                composite.original_datatype_code = image.original_datatype_code
+                textures[name] = composite
         return textures
 
     def find_tlk_entry_references(
@@ -1894,6 +1926,9 @@ class Installation:
         self,
         locstring: LocalizedString,
         default: str = "",
+        *,
+        language: Language | int | None = None,
+        gender: Gender = Gender.MALE,
     ) -> str:
         """Returns the string for the LocalizedString provided.
 
@@ -1908,19 +1943,22 @@ class Installation:
         -------
             str: text from the locstring lookup
         """
-        batch: dict[LocalizedString, str] = self.strings([locstring], default)
+        batch: dict[LocalizedString, str] = self.strings([locstring], default, language=language, gender=gender)
         return batch[locstring]
 
     def strings(
         self,
         queries: list[LocalizedString],
         default: str = "",
+        *,
+        language: Language | int | None = None,
+        gender: Gender = Gender.MALE,
     ) -> dict[LocalizedString, str]:
         """Returns a dictionary mapping the items provided in the queries argument to a string.
 
-        As the method iterates through each LocalizedString it will first check if the TalkTable linked to the
-        Installation has the stringref. If not it will try fallback on whatever substring exists in the LocalizedString
-        and should that fail it will fallback on the default string specified.
+        Select the requested embedded substring before looking up the stringref.
+        The default language is the installation's TLK language. English always
+        uses the male substring; other languages honor the requested gender.
 
         Args:
         ----
@@ -1931,24 +1969,31 @@ class Installation:
         -------
             A dictionary mapping LocalizedString to a string.
         """
-        stringrefs: list[int] = [locstring.stringref for locstring in queries]
-
-        batch: dict[int, StringResult] = self.talktable().batch(stringrefs)
-        female_batch: dict[int, StringResult] = self.female_talktable().batch(stringrefs) if self.female_talktable().path().safe_isfile() else {}
-
+        language = self.talktable().language_id() if language is None else language
+        gender = Gender.MALE if language == Language.ENGLISH else gender
         results: dict[LocalizedString, str] = {}
+        pending = []
         for locstring in queries:
-            if locstring.stringref != -1:  # TODO: use gender information from locstring.
-                if locstring.stringref in batch:
-                    results[locstring] = batch[locstring.stringref].text
-                elif locstring.stringref in female_batch:
-                    results[locstring] = female_batch[locstring.stringref].text
-            elif len(locstring):
-                for _language, _gender, text in locstring:
-                    results[locstring] = text
-                    break
+            embedded = locstring.get(language, gender)
+            if embedded is not None:
+                results[locstring] = embedded
+            elif locstring.stringref != -1:
+                pending.append(locstring)
             else:
                 results[locstring] = default
+
+        if pending:
+            tables = []
+            if gender == Gender.FEMALE and self.female_talktable().path().safe_isfile():
+                tables.append(self.female_talktable())
+            tables.append(self.talktable())
+            stringrefs = [locstring.stringref for locstring in pending]
+            resolved: dict[int, StringResult] = {}
+            for table in tables:
+                for stringref, result in table.batch(stringrefs, include_missing=False).items():
+                    resolved.setdefault(stringref, result)
+            for locstring in pending:
+                results[locstring] = resolved[locstring.stringref].text if locstring.stringref in resolved else default
 
         return results
 

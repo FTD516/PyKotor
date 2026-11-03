@@ -118,6 +118,16 @@ def _load_node(
         mdx_texture_offset = mdl.read_int32()
         mdx_lightmap_offset = mdl.read_int32()
 
+        dirt_index, dirt_worldspace = 0, False
+        if k2:
+            mdl.seek(offset + 80 + 322)
+            dirt_enabled = mdl.read_uint8()
+            mdl.skip(1)
+            dirt_index = mdl.read_uint16()
+            dirt_worldspace = mdl.read_uint16() == 1
+            if not dirt_enabled:
+                dirt_index = 0
+
         mdl.seek(offset + 80 + 313)
         render = mdl.read_uint8()
 
@@ -137,6 +147,8 @@ def _load_node(
                 mdx_normal_offset,
                 mdx_texture_offset,
                 mdx_lightmap_offset,
+                dirt_index=dirt_index,
+                dirt_worldspace=dirt_worldspace,
             )
 
     for i in range(child_count):
@@ -265,14 +277,25 @@ def gl_load_stitched_model(scene: Scene, mdl: BinaryReader, mdx: BinaryReader) -
             glm.decompose(transform, vec3(), node._rotation, node._position, vec3(), vec4())  # noqa: SLF001  # type: ignore[call-overload, reportCallIssue, reportArgumentType]
             node._recalc_transform()
 
-    merged: dict[tuple[str, str, int], list[tuple[int, mat4x4]]] = {}
+    merged: dict[tuple[str, str, int, int, bool], list[tuple[int, mat4x4]]] = {}
     for offset, transform in offsets:
         mdl.seek(offset + 80 + 88)
         texture = mdl.read_terminated_string("\0", 32)
         lightmap = mdl.read_terminated_string("\0", 32)
         mdl.seek(offset + 80 + 256)
         streams = mdl.read_uint32()
-        key = (texture, lightmap, streams & 0x27)
+        mdl.seek(offset + 80)
+        k2 = mdl.read_uint32() in {4216880, 4216816, 4216864}
+        dirt_index, dirt_worldspace = 0, False
+        if k2:
+            mdl.seek(offset + 80 + 322)
+            dirt_enabled = mdl.read_uint8()
+            mdl.skip(1)
+            dirt_index = mdl.read_uint16()
+            dirt_worldspace = mdl.read_uint16() == 1
+            if not dirt_enabled:
+                dirt_index = 0
+        key = (texture, lightmap, streams & 0x27, dirt_index, dirt_worldspace)
         if key not in merged:
             merged[key] = []
         merged[key].append((offset, transform))
@@ -311,6 +334,7 @@ def gl_load_stitched_model(scene: Scene, mdl: BinaryReader, mdx: BinaryReader) -
             for i in range(vertex_count):
                 mdx.seek(mdx_offset + i * mdx_block_size + mdx_vertex_offset)
                 vertex = vec3(mdx.read_single(), mdx.read_single(), mdx.read_single())
+                local_vertex = vec3(vertex)
                 vertex = transform * vertex
                 vertex_data += struct.pack("fff", vertex.x, vertex.y, vertex.z)
 
@@ -335,6 +359,7 @@ def gl_load_stitched_model(scene: Scene, mdl: BinaryReader, mdx: BinaryReader) -
                 else:
                     mdx.seek(mdx_offset + i * mdx_block_size + mdx_lightmap_offset)
                     vertex_data += mdx.read_bytes(8)
+                vertex_data += struct.pack("fff", local_vertex.x, local_vertex.y, local_vertex.z)
 
             last_element += vertex_count
 
@@ -342,7 +367,8 @@ def gl_load_stitched_model(scene: Scene, mdl: BinaryReader, mdx: BinaryReader) -
         for element in elements:
             element_data += struct.pack("H", element)
 
-        texture, lightmap, mdx_data_bitflags = key
-        child.mesh = Mesh(scene, child, texture, lightmap, vertex_data, element_data, 40, mdx_data_bitflags, 0, 12, 24, 32)
+        texture, lightmap, mdx_data_bitflags, dirt_index, dirt_worldspace = key
+        child.mesh = Mesh(scene, child, texture, lightmap, vertex_data, element_data, 52, mdx_data_bitflags, 0, 12, 24, 32,
+                          local_vertex_offset=40, dirt_index=dirt_index, dirt_worldspace=dirt_worldspace)
 
     return Model(scene, root)

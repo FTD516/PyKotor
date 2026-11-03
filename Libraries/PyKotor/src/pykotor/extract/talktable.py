@@ -28,7 +28,7 @@ class TLKData(NamedTuple):
     sound_length: float
 
 
-class TalkTable:  # TODO: dialogf.tlk
+class TalkTable:
     """Talktables are for read-only loading of stringrefs stored in a dialog.tlk file.
 
     Files are only opened when accessing a stored string, this means that strings are always up to date at
@@ -97,6 +97,8 @@ class TalkTable:  # TODO: dialogf.tlk
     def batch(
         self,
         stringrefs: list[int],
+        *,
+        include_missing: bool = True,
     ) -> dict[int, StringResult]:
         """Loads a list of strings and sound ResRefs from the specified list.
 
@@ -105,6 +107,8 @@ class TalkTable:  # TODO: dialogf.tlk
         Args:
         ----
             stringrefs: A list of stringref ints.
+            include_missing: Include empty results for missing/excluded entries.
+                False keeps those distinct from existing entries with empty text.
 
         Returns:
         -------
@@ -115,10 +119,14 @@ class TalkTable:  # TODO: dialogf.tlk
             encoding = TLK.encoding_for_language(header.language_id)
             results: dict[int, StringResult] = {}
             for stringref in stringrefs:
+                reference = stringref & 0xFFFFFFFF
+                index = reference & 0xFFFFFF
                 text = ""
                 sound = ResRef.from_blank()
-                if 0 <= stringref < header.string_count:
-                    entry = self._extract_common_tlk_data(reader, stringref, header)
+                if include_missing:
+                    results[stringref] = StringResult(text, sound)
+                if reference != 0xFFFFFFFF and index < header.string_count:
+                    entry = self._extract_common_tlk_data(reader, index, header)
                     if not entry.flags & 0x8000:
                         if entry.flags & 1 and entry.text_length:
                             reader.seek(header.texts_offset + entry.text_offset)
@@ -126,7 +134,7 @@ class TalkTable:  # TODO: dialogf.tlk
                             text = data.decode(encoding, "surrogateescape")
                         if entry.flags & 2:
                             sound = entry.sound_resref
-                results[stringref] = StringResult(text, sound)
+                        results[stringref] = StringResult(text, sound)
             return results
 
     def size(
@@ -150,6 +158,10 @@ class TalkTable:  # TODO: dialogf.tlk
         -------
             The language of the TLK file.
         """
+        language_id = self.language_id()
+        return Language(language_id) if language_id in Language._value2member_map_ else Language.UNKNOWN
+
+    def language_id(self) -> int:
+        """Return the stored language ID, including IDs outside the enum."""
         with BinaryReader.from_file(self._path) as reader:
-            language_id = TLKHeader.read(reader).language_id
-            return Language(language_id) if language_id in Language._value2member_map_ else Language.UNKNOWN
+            return TLKHeader.read(reader).language_id

@@ -125,20 +125,20 @@ class ARE:
         self.fog_far: float = 0
         self.fog_enabled: bool = False
 
-        self.dirty_argb_1: Color = Color.BLACK
+        self.dirty_argb_1: Color = Color(0, 0, 0, 0)
         self.dirty_func_1: int = 0
-        self.dirty_size_1: int = 0
-        self.dirty_formula_1: int = 0
+        self.dirty_size_1: int = 16
+        self.dirty_formula_1: int = 1
 
-        self.dirty_argb_2: Color = Color.BLACK
+        self.dirty_argb_2: Color = Color(0, 0, 0, 0)
         self.dirty_func_2: int = 0
-        self.dirty_size_2: int = 0
-        self.dirty_formula_2: int = 0
+        self.dirty_size_2: int = 16
+        self.dirty_formula_2: int = 1
 
-        self.dirty_argb_3: Color = Color.BLACK
+        self.dirty_argb_3: Color = Color(0, 0, 0, 0)
         self.dirty_func_3: int = 0
-        self.dirty_size_3: int = 0
-        self.dirty_formula_3: int = 0
+        self.dirty_size_3: int = 16
+        self.dirty_formula_3: int = 1
 
         self.grass_ambient: Color = Color.BLACK
         self.grass_diffuse: Color = Color.BLACK
@@ -309,14 +309,14 @@ def construct_are(
     are.chance_rain = root.acquire("ChanceRain", 0, field_type=GFFFieldType.Int32)
     are.chance_snow = root.acquire("ChanceSnow", 0, field_type=GFFFieldType.Int32)
     are.chance_lightning = root.acquire("ChanceLightning", 0, field_type=GFFFieldType.Int32)
-    are.dirty_size_1 = root.acquire("DirtySizeOne", 0, field_type=GFFFieldType.Int32)
-    are.dirty_formula_1 = root.acquire("DirtyFormulaOne", 0, field_type=GFFFieldType.Int32)
+    are.dirty_size_1 = root.acquire("DirtySizeOne", 16, field_type=GFFFieldType.Int32)
+    are.dirty_formula_1 = root.acquire("DirtyFormulaOne", 1, field_type=GFFFieldType.Int32)
     are.dirty_func_1 = root.acquire("DirtyFuncOne", 0, field_type=GFFFieldType.Int32)
-    are.dirty_size_2 = root.acquire("DirtySizeTwo", 0, field_type=GFFFieldType.Int32)
-    are.dirty_formula_2 = root.acquire("DirtyFormulaTwo", 0, field_type=GFFFieldType.Int32)
+    are.dirty_size_2 = root.acquire("DirtySizeTwo", 16, field_type=GFFFieldType.Int32)
+    are.dirty_formula_2 = root.acquire("DirtyFormulaTwo", 1, field_type=GFFFieldType.Int32)
     are.dirty_func_2 = root.acquire("DirtyFuncTwo", 0, field_type=GFFFieldType.Int32)
-    are.dirty_size_3 = root.acquire("DirtySizeThree", 0, field_type=GFFFieldType.Int32)
-    are.dirty_formula_3 = root.acquire("DirtyFormulaThre", 0, field_type=GFFFieldType.Int32)
+    are.dirty_size_3 = root.acquire("DirtySizeThree", 16, field_type=GFFFieldType.Int32)
+    are.dirty_formula_3 = root.acquire("DirtyFormulaThre", 1, field_type=GFFFieldType.Int32)
     are.dirty_func_3 = root.acquire("DirtyFuncThree", 0, field_type=GFFFieldType.Int32)
     are.unused_id = root.acquire("ID", 0, field_type=GFFFieldType.Int32)
     are.creator_id = root.acquire("Creator_ID", 0, field_type=GFFFieldType.Int32)
@@ -347,9 +347,9 @@ def construct_are(
     are.grass_diffuse = Color.from_rgb_integer(root.acquire("Grass_Diffuse", 0, field_type=GFFFieldType.UInt32))
 
     are.grass_emissive = Color.from_rgb_integer(root.acquire("Grass_Emissive", 0, field_type=GFFFieldType.UInt32))
-    are.dirty_argb_1 = Color.from_rgb_integer(root.acquire("DirtyARGBOne", 0, field_type=GFFFieldType.Int32))
-    are.dirty_argb_2 = Color.from_rgb_integer(root.acquire("DirtyARGBTwo", 0, field_type=GFFFieldType.Int32))
-    are.dirty_argb_3 = Color.from_rgb_integer(root.acquire("DirtyARGBThree", 0, field_type=GFFFieldType.Int32))
+    are.dirty_argb_1 = Color.from_argb_integer(root.acquire("DirtyARGBOne", 0, field_type=GFFFieldType.Int32))
+    are.dirty_argb_2 = Color.from_argb_integer(root.acquire("DirtyARGBTwo", 0, field_type=GFFFieldType.Int32))
+    are.dirty_argb_3 = Color.from_argb_integer(root.acquire("DirtyARGBThree", 0, field_type=GFFFieldType.Int32))
 
     rooms_list = root.acquire("Rooms", GFFList(), field_type=GFFFieldType.List)
     for room_struct in rooms_list:
@@ -459,9 +459,9 @@ def dismantle_are(
             room_struct.set_int32("ForceRating", room.force_rating)
 
     if game.is_k2():
-        root.set_int32("DirtyARGBOne", are.dirty_argb_1.rgb_integer())
-        root.set_int32("DirtyARGBTwo", are.dirty_argb_2.rgb_integer())
-        root.set_int32("DirtyARGBThree", are.dirty_argb_3.rgb_integer())
+        root.set_int32("DirtyARGBOne", (are.dirty_argb_1.argb_integer() + 0x80000000) % 0x100000000 - 0x80000000)
+        root.set_int32("DirtyARGBTwo", (are.dirty_argb_2.argb_integer() + 0x80000000) % 0x100000000 - 0x80000000)
+        root.set_int32("DirtyARGBThree", (are.dirty_argb_3.argb_integer() + 0x80000000) % 0x100000000 - 0x80000000)
         root.set_uint32("Grass_Emissive", are.grass_emissive.rgb_integer())
 
         root.set_int32("ChanceRain", are.chance_rain)

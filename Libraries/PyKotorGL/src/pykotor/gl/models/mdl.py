@@ -16,7 +16,6 @@ from OpenGL.raw.GL.ARB.tessellation_shader import GL_TRIANGLES
 from OpenGL.raw.GL.ARB.vertex_shader import GL_FLOAT
 from OpenGL.raw.GL.VERSION.GL_1_0 import GL_UNSIGNED_SHORT
 from OpenGL.raw.GL.VERSION.GL_1_1 import glDrawElements
-from OpenGL.raw.GL.VERSION.GL_1_3 import GL_TEXTURE0, GL_TEXTURE1, glActiveTexture
 from OpenGL.raw.GL.VERSION.GL_1_5 import GL_ARRAY_BUFFER, GL_ELEMENT_ARRAY_BUFFER, GL_STATIC_DRAW, glBindBuffer, glBufferData
 from OpenGL.raw.GL.VERSION.GL_2_0 import glEnableVertexAttribArray
 from OpenGL.raw.GL.VERSION.GL_3_0 import glBindVertexArray
@@ -256,6 +255,10 @@ class Mesh:
         normal_offset: int,
         texture_offset: int,
         lightmap_offset: int,
+        *,
+        local_vertex_offset: int | None = None,
+        dirt_index: int = 0,
+        dirt_worldspace: bool = False,
     ):
         """Initializes a Mesh object.
 
@@ -291,6 +294,11 @@ class Mesh:
         self.vertex_data = vertex_data
         self.mdx_size = block_size
         self.mdx_vertex = vertex_offset
+        self.has_normals = bool(data_bitflags & 0x20)
+        self.dirt_index, self.dirt_worldspace = dirt_index, dirt_worldspace
+        positions = np.ndarray((len(vertex_data) // block_size, 3), dtype=np.float32,
+                               buffer=vertex_data, offset=vertex_offset, strides=(block_size, 4))
+        self.center = vec3(*positions.mean(axis=0).tolist())
 
         self._vao = glGenVertexArrays(1)
         self._vbo = glGenBuffers(1)
@@ -313,6 +321,13 @@ class Mesh:
             glEnableVertexAttribArray(1)
             glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, block_size, ctypes.c_void_p(vertex_offset))
 
+        if self.has_normals:
+            glEnableVertexAttribArray(2)
+            glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, block_size, ctypes.c_void_p(normal_offset))
+        glEnableVertexAttribArray(5)
+        glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, block_size,
+                              ctypes.c_void_p(vertex_offset if local_vertex_offset is None else local_vertex_offset))
+
         if data_bitflags & 0x0002 and texture and texture.upper() != "NULL" and texture_offset not in (-1, 0xFFFFFFFF):
             glEnableVertexAttribArray(3)
             glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, block_size, ctypes.c_void_p(texture_offset))
@@ -332,14 +347,13 @@ class Mesh:
         transform: mat4,
         override_texture: str | None = None,
     ):
+        if shader is self._scene.shader:
+            self._scene.draw_mesh(self, transform, override_texture or self.texture)
+        else:
+            self.draw_geometry(shader, transform)
+
+    def draw_geometry(self, shader: Shader, transform: mat4):
         shader.set_matrix4("model", transform)
-
-        glActiveTexture(GL_TEXTURE0)
-        self._scene.loadTexture(override_texture or self.texture).use()
-
-        glActiveTexture(GL_TEXTURE1)
-        self._scene.loadTexture(self.lightmap, lightmap=True).use()
-
         glBindVertexArray(self._vao)
         glDrawElements(GL_TRIANGLES, self._face_count, GL_UNSIGNED_SHORT, None)
 

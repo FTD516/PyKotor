@@ -9,6 +9,8 @@ from pykotor.resource.type import ResourceReader, ResourceWriter, autoclose
 from pykotor.tools.encoding import decode_bytes_with_fallbacks
 
 if TYPE_CHECKING:
+    from typing import Any
+
     from pykotor.resource.type import SOURCE_TYPES, TARGET_TYPES
 
 
@@ -28,8 +30,12 @@ class TwoDAJSONReader(ResourceReader):
         self,
         auto_close: bool = True,
     ) -> TwoDA:
-        self._twoda = TwoDA()
-        self._json = json.loads(decode_bytes_with_fallbacks(self._reader.read_bytes(self._reader.size())))
+        self._json = json.loads(decode_bytes_with_fallbacks(self._reader.read_bytes(self._size)))
+        self._twoda = TwoDA(
+            self._json.get("columns", []),
+            version=self._json.get("version", "V2.b"),
+            default=self._json.get("default", ""),
+        )
 
         for row in self._json["rows"]:
             row_label = row["_id"]
@@ -52,7 +58,12 @@ class TwoDAJSONWriter(ResourceWriter):
     ):
         super().__init__(target)
         self._twoda: TwoDA = twoda
-        self._json: dict[str, list] = {"rows": []}
+        self._json: dict[str, Any] = {
+            "version": twoda.version,
+            "default": twoda.default,
+            "columns": twoda.get_headers(),
+            "rows": [],
+        }
 
     @autoclose
     def write(

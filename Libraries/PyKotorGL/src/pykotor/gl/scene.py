@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 import threading
 import traceback
+import time
+import zlib
 
 from concurrent.futures import ThreadPoolExecutor
 from copy import copy
@@ -39,6 +41,8 @@ from pykotor.common.stream import BinaryReader
 from pykotor.extract.file import ResourceResult
 from pykotor.extract.installation import SearchLocation
 from pykotor.gl.models.mdl import Boundary, Cube, Empty, Model
+from pykotor.gl.material import Material
+from pykotor.gl.texture import TextureData
 from pykotor.gl.models.predefined_mdl import (
     CAMERA_MDL_DATA,
     CAMERA_MDX_DATA,
@@ -74,7 +78,7 @@ from pykotor.gl.shader import (
 )
 from pykotor.resource.formats.lyt import LYTRoom
 from pykotor.resource.formats.lyt.lyt_data import LYT
-from pykotor.resource.formats.tpc import TPC
+from pykotor.resource.formats.tpc import TPC, TPCTextureFormat
 from pykotor.resource.formats.twoda import TwoDA, read_2da
 from pykotor.resource.generics.git import (
     GIT,
@@ -89,6 +93,8 @@ from pykotor.resource.generics.git import (
     GITTrigger,
     GITWaypoint,
 )
+from pykotor.resource.generics.are import ARE
+from pykotor.resource.formats.txi import TXI
 from pykotor.resource.generics.utd import UTD
 from pykotor.resource.generics.utp import UTP
 from pykotor.resource.generics.uts import UTS
@@ -150,8 +156,6 @@ class Scene:
 
         self.executor = ThreadPoolExecutor(max_workers=4)
         self.texture_data_futures = {}
-        self.textures_data_queue: dict[str, tuple[TPC | None, bool]] = {}  # This will hold the texture data loaded in the background
-        self.textures_data_lock: threading.Lock = threading.Lock()
         self.model_data_futures = {}
         self.models_data_queue: dict[str, Any] = {}
         self.models_data_lock: threading.Lock = threading.Lock()
@@ -162,12 +166,26 @@ class Scene:
         self.objects: dict[Any, RenderObject] = {}
         self.selection: list[RenderObject] = []
         self._module: Module | None = module
+        self.area = ARE() if module is None else module.are().resource()
+        self.dirty_parameters = self._dirty_settings()
+        self.materials: dict[tuple[str, str], Material] = {}
+        self._draw_calls = []
+        self._collect_draws = False
+        self.frame_index = 0
+        self.frame_delta = 0.0
+        self._frame_time = time.monotonic()
+        self.global_alpha = 1.0
+        self.light_direction = glm.normalize(vec3(.3, -.4, 1))
+        self.light_color = vec3(1)
+        self.ambient_color = vec3(.2)
         self.camera: Camera = Camera()
         self._screen_size: tuple[int, int] = (0, 0)
         self._viewport: tuple[int, int, int, int] = (0, 0, 0, 0)
         self.cursor: RenderObject = RenderObject("cursor")
         self.blank_texture: Texture = Texture.from_color(255, 0, 255)
         self.blank_lightmap: Texture = Texture.from_color(0, 0, 0)
+        self.blank_normal = Texture.from_color(255, 128, 128)
+        self.blank_volume = Texture.volume_color()
 
         self.textures["NULL"] = Texture.from_color()
 
@@ -401,8 +419,16 @@ class Scene:
             for door in self.git.doors.copy():
                 if door.resref == identifier.resname and identifier.restype is ResourceType.UTD:
                     self.objects.pop(door, None)
-            if identifier.restype in {ResourceType.TPC, ResourceType.TGA}:
-                self.textures.pop(identifier.resname, None)
+            if identifier.restype in {ResourceType.TPC, ResourceType.TGA, ResourceType.TXI}:
+                self.invalidate_texture(identifier.resname)
+            if identifier.restype is ResourceType.ARE:
+                self.area = self.module.are().resource()
+                self.dirty_parameters = self._dirty_settings()
+                for name in tuple(self.textures):
+                    if self.textures[name].settings.controller in ("dirty", "dirty2", "dirty3"):
+                        self.invalidate_texture(name)
+                for name in tuple(self.texture_data_futures):
+                    self.invalidate_texture(name)
             if identifier.restype in {ResourceType.MDL, ResourceType.MDX}:
                 self.models.pop(identifier.resname, None)
             if identifier.restype is ResourceType.GIT:
@@ -584,15 +610,31 @@ class Scene:
         """
         #module_id_part = "" if self._module is None else f" from module '{self.module._id}'"
         #get_root_logger().debug("Refresh/build cache for scene%s", module_id_part)
+        now = time.monotonic()
+        self.frame_delta, self._frame_time = now - self._frame_time, now
+        self.frame_index += 1
         self.buildCache()
         self.update_textures()  # Ensure newly loaded textures are created
         #self.update_models()
 
         self._prepare_gl_and_shader()
-        self.shader.set_bool("enableLightmap", self.use_lightmap)
+        self._draw_calls.clear()
+        self._collect_draws = True
         group1: list[RenderObject] = [obj for obj in self.objects.values() if obj.model not in self.SPECIAL_MODELS]
         for obj in group1:
             self._render_object(self.shader, obj, mat4())
+        self._collect_draws = False
+        for material in {command[0] for command in self._draw_calls}:
+            material.refresh()
+        view = self.camera.view()
+        def order(command):
+            material, mesh, transform = command
+            depth = -float((view * transform * vec4(mesh.center, 1)).z)
+            return material.transparent, -depth if material.transparent else depth
+        for material, mesh, transform in sorted(self._draw_calls, key=order):
+            material.bind(mesh, color=True)
+            mesh.draw_geometry(self.shader, transform)
+            material.finish()
 
         # Draw all instance types that lack a proper model
         #get_root_logger().debug("Draw all instance types that lack a proper model...")
@@ -630,20 +672,44 @@ class Scene:
             self.plain_shader.set_vector4("color", vec4(1.0, 0.0, 0.0, 0.4))
             self._render_object(self.plain_shader, self.cursor, mat4())
 
+    def invalidate_texture(self, name: str):
+        name = name.lower()
+        self.textures.pop(name, None)
+        if name in self.texture_data_futures:
+            self.texture_data_futures.pop(name).cancel()
+
     def update_textures(self):
-        """Create OpenGL textures from data loaded in background."""
-        with self.textures_data_lock:
-            for name, result in list(self.textures_data_queue.items()):
-                if result is None:  # still processing...
-                    continue
-                tpc, is_lightmap = result
-                if name in self.textures:
-                    continue  # Skip if already created
-                if tpc is None:
-                    self.textures[name] = self.blank_lightmap if is_lightmap else self.blank_texture
-                else:
-                    self.textures[name] = Texture.from_tpc(tpc)
-                del self.textures_data_queue[name]
+        """Upload completed worker data; worker exceptions reach the preview caller."""
+        for name, future in tuple(self.texture_data_futures.items()):
+            if future.done():
+                self.textures[name] = Texture.from_data(future.result())
+                del self.texture_data_futures[name]
+
+    def _dirty_settings(self):
+        parameters = []
+        for index in range(1, 4):
+            size = getattr(self.area, f"dirty_size_{index}")
+            formula = getattr(self.area, f"dirty_formula_{index}")
+            formula = {0: 1, 1: 0}.get(formula, formula)
+            parameters.append((getattr(self.area, f"dirty_argb_{index}").argb_integer(), size,
+                               formula, getattr(self.area, f"dirty_func_{index}")) if size else (0, 16, 0, 0))
+        return tuple(parameters)
+
+    def dirt_texture(self, index):
+        return self.loadTexture(f"@dirty{index}")
+
+    def draw_mesh(self, mesh, transform, diffuse):
+        key = diffuse.lower(), mesh.lightmap.lower()
+        if key not in self.materials:
+            self.materials[key] = Material(self, diffuse, mesh.lightmap)
+        material = self.materials[key]
+        if self._collect_draws:
+            self._draw_calls.append((material, mesh, transform))
+        else:
+            material.refresh()
+            material.bind(mesh, color=False)
+            mesh.draw_geometry(self.shader, transform)
+            material.finish()
 
     def update_models(self):
         """Currently unused."""
@@ -816,21 +882,27 @@ class Scene:
         self.shader.use()
         self.shader.set_matrix4("view", self.camera.view())
         self.shader.set_matrix4("projection", self.camera.projection())
+        self.shader.set_vector3("eyePosition", vec3(glm.inverse(self.camera.view())[3]))
+        self.shader.set_vector3("lightDirection", self.light_direction)
+        self.shader.set_vector3("lightColor", self.light_color)
+        self.shader.set_vector3("ambientColor", self.ambient_color)
 
     def loadTexture(
         self,
         name: str,
         *,
         lightmap: bool = False,
+        normal: bool = False,
     ) -> Texture:
         """Load texture data asynchronously."""
+        name = name.lower()
         if name in self.textures:
             return self.textures[name]
-        with self.textures_data_lock:
-            if name in self.textures_data_queue:
-                return self.blank_lightmap if lightmap else self.blank_texture
-        self.executor.submit(self.fetch_texture_data, name, lightmap=lightmap)
-        return self.blank_lightmap if lightmap else self.blank_texture
+        if name not in self.texture_data_futures:
+            self.texture_data_futures[name] = self.executor.submit(self.fetch_texture_data, name)
+        if name.startswith("@dirty"):
+            return self.blank_volume
+        return self.blank_normal if normal else self.blank_lightmap if lightmap else self.blank_texture
 
     def loadModel(self, name: str) -> Model:
         """Load model data asynchronously. Currently unused."""
@@ -973,41 +1045,37 @@ class Scene:
             self.models[name] = model
         return self.models[name]
 
-    def fetch_texture_data(
-        self,
-        name: str,
-        *,
-        lightmap: bool = False,
-    ):
-        """This function runs in a background thread and handles the I/O and processing to get the texture data."""
-        with self.textures_data_lock:
-            if name in self.textures_data_queue:
-                return
-            self.textures_data_queue[name] = None  # Temporary store something to prevent other calls from executing while we're still here.
-        type_name = "lightmap" if lightmap else "texture"
-        try:
-            tpc: TPC | None = None
-            # Check the textures linked to the module first
+    def fetch_texture_data(self, name: str) -> TextureData:
+        """Resolve native texture resources and prepare CPU data in the worker."""
+        if name.startswith("@dirty"):
+            index = int(name[len("@dirty"):]) - 1
+            tpc = TPC()
+            tpc.header.game = 2
+            tpc.set_single(2, 2, bytes([127]) * 16, TPCTextureFormat.RGBA)
+            tpc.txi = "proceduretype " + ("dirty", "dirty2", "dirty3")[index]
+            dirty = self.dirty_parameters[index]
+        else:
+            tpc = None
+            capsules = [] if self._module is None else self.module.capsules()
+            order = [SearchLocation.OVERRIDE, SearchLocation.CUSTOM_MODULES, SearchLocation.TEXTURES_TPA, SearchLocation.CHITIN]
             if self._module is not None:
-                RobustRootLogger().debug(f"Locating {type_name} '{name}' in module '{self.module.root()}'")
                 module_tex = self.module.texture(name)
                 if module_tex is not None:
-                    RobustRootLogger().debug(f"Loading {type_name} '{name}' from module '{self.module.root()}'")
-                    tpc = module_tex.resource()
-
-            # Otherwise just search through all relevant game files
-            if tpc is None and self.installation:
-                RobustRootLogger().debug(f"Locating and loading {type_name} '{name}' from override/bifs/texturepacks...")
-                tpc = self.installation.texture(name, [SearchLocation.OVERRIDE, SearchLocation.TEXTURES_TPA, SearchLocation.CHITIN])
+                    tpc = copy(module_tex.resource())
+                    external = self.installation.resource(name, ResourceType.TXI, order, capsules=capsules)
+                    if external is not None:
+                        tpc.external_txi = TXI(external.data)
+                        tpc.external_txi_source = str(external.filepath)
+                    if tpc.effective_txi.settings(game=tpc.header.game).texture["filerange"]:
+                        tpc = self.installation.texture(name, order, capsules=capsules)
+            if tpc is None and self.installation is not None:
+                tpc = self.installation.texture(name, order, capsules=capsules)
             if tpc is None:
-                RobustRootLogger().warning(f"MISSING {type_name.upper()}: '%s'", name)
-        except Exception:  # noqa: BLE001
-            RobustRootLogger().exception("Exception thrown while loading %s.", type_name)
-            # If an error occurs during the loading process, just use a blank image.
-            tpc = TPC()
-
-        with self.textures_data_lock:
-            self.textures_data_queue[name] = (tpc or TPC(), lightmap)
+                raise FileNotFoundError(f"Texture resource '{name}' was not found.")
+            controller = tpc.effective_txi.settings(game=tpc.header.game).controller
+            dirty = (self.dirty_parameters[("dirty", "dirty2", "dirty3").index(controller)]
+                     if controller in ("dirty", "dirty2", "dirty3") else (0, 16, 0, 0))
+        return TextureData.prepare(tpc, dirty=dirty, seed=zlib.crc32(name.encode("latin-1")))
 
     def jump_to_entry_location(self):
         if self._module is None:

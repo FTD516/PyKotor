@@ -88,8 +88,8 @@ class TXISettings:
         "specularcolor": (1.0, 1.0, 1.0),
     })
     material: dict = field(default_factory=lambda: {
-        "blending": None, "decal": False, "wateralpha": 0.0,
-        "renderbmlmtype": 0, "bumpmaptexture": None,
+        "blending": None, "decal": False, "wateralpha": 1.0,
+        "renderbmlmtype": 1, "bumpmaptexture": None,
         "bumpyshinytexture": None, "envmaptexture": None,
     })
     font: dict | None = None

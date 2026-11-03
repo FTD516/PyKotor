@@ -409,6 +409,17 @@ class Color:
         blue = vector3.x
         return Color(red, green, blue)
 
+    @classmethod
+    def from_argb_integer(cls, integer: int) -> Color:
+        """Decode AARRGGBB, including signed 32-bit ARE dirt colors."""
+        return cls(((integer >> 16) & 255) / 255, ((integer >> 8) & 255) / 255,
+                   (integer & 255) / 255, ((integer >> 24) & 255) / 255)
+
+    def argb_integer(self) -> int:
+        """Encode AARRGGBB without dropping the alpha channel."""
+        return (round(self.a * 255) << 24 | round(self.r * 255) << 16
+                | round(self.g * 255) << 8 | round(self.b * 255))
+
     def rgb_integer(
         self,
     ) -> int:

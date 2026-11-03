@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from pykotor.common.stream import BinaryReader
+from pykotor.resource.formats.twoda.io_twoda_text import _token, _tokens
 from pykotor.resource.formats.twoda.twoda_data import TwoDA
 from pykotor.resource.type import ResourceReader, ResourceWriter, autoclose
 
 if TYPE_CHECKING:
     from pykotor.resource.type import SOURCE_TYPES, TARGET_TYPES
+
+_DEFAULT_LINE = re.compile(rb"[ \t\r\n]*(?i:DEFAULT:)(?=[ \t\r\n])([^\r\n]*)[\r\n]+")
 
 
 class TwoDABinaryReader(ResourceReader):
@@ -17,7 +21,8 @@ class TwoDABinaryReader(ResourceReader):
     @autoclose
     def load(self, auto_close: bool = True) -> TwoDA:
         # Bound terminated strings and offsets to this resource, not its container.
-        with BinaryReader.from_bytes(self._reader.read_bytes(self._size)) as reader:
+        data = self._reader.read_bytes(self._size)
+        with BinaryReader.from_bytes(data) as reader:
             if reader.read_bytes(8) != b"2DA V2.b":
                 raise ValueError("Expected a binary 2DA V2.b header.")
             newline = reader.read_bytes(1)
@@ -28,6 +33,10 @@ class TwoDABinaryReader(ResourceReader):
                 raise ValueError("Missing line ending after the binary 2DA header.")
 
             twoda = TwoDA()
+            default_line = _DEFAULT_LINE.match(data, reader.position())
+            if default_line is not None:
+                twoda.default = next(_tokens(default_line[1].decode("latin-1")), "")
+                reader.seek(default_line.end())
             while reader.peek() != b"\0":
                 twoda.add_column(reader.read_terminated_string("\t", encoding="latin-1"))
             reader.skip(1)
@@ -58,6 +67,8 @@ class TwoDABinaryWriter(ResourceWriter):
     def write(self, auto_close: bool = True):
         headers = self._twoda.get_headers()
         self._writer.write_bytes(b"2DA V2.b\n")
+        if self._twoda.default:
+            self._writer.write_bytes(("DEFAULT: " + _token(self._twoda.default) + "\n").encode("latin-1"))
         for header in headers:
             self._writer.write_bytes((header + "\t").encode("latin-1"))
         self._writer.write_bytes(b"\0")

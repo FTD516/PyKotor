@@ -3,64 +3,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import glm
-import numpy as np
+from OpenGL.GL import (GL_FALSE, GL_FRAGMENT_SHADER, GL_VERTEX_SHADER, glGetUniformLocation,
+                       glUniform1f, glUniform1i, glUniform3fv, glUniform4fv, glUniformMatrix4fv,
+                       glUseProgram, shaders)
 
-from OpenGL.GL import (
-    GL_CLAMP_TO_EDGE,
-    GL_LINEAR,
-    GL_LINEAR_MIPMAP_LINEAR,
-    GL_NEAREST,
-    GL_NEAREST_MIPMAP_NEAREST,
-    GL_NO_ERROR,
-    GL_REPEAT,
-    GL_RGB,
-    GL_TEXTURE_2D,
-    GL_TEXTURE_MAG_FILTER,
-    GL_TEXTURE_MIN_FILTER,
-    GL_TEXTURE_MAX_LEVEL,
-    GL_TEXTURE_WRAP_S,
-    GL_TEXTURE_WRAP_T,
-    GL_UNSIGNED_BYTE,
-    GL_UNPACK_ALIGNMENT,
-    glBindTexture,
-    glGenTextures,
-    glGetError,
-    glGetIntegerv,
-    glGetUniformLocation,
-    glTexImage2D,
-    glTexParameteri,
-    glPixelStorei,
-    glUniform3fv,
-    glUniform4fv,
-    glUniformMatrix4fv,
-    shaders,
-)
-from OpenGL.GL.shaders import GL_FALSE
-from OpenGL.GLU import gluErrorString
-from OpenGL.raw.GL.EXT.texture_compression_s3tc import GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, GL_COMPRESSED_RGB_S3TC_DXT1_EXT
-from OpenGL.raw.GL.VERSION.GL_1_0 import (
-    GL_LINEAR,
-    GL_REPEAT,
-    GL_RGB,
-    GL_RGBA,
-    GL_TEXTURE_2D,
-    GL_TEXTURE_MAG_FILTER,
-    GL_TEXTURE_MIN_FILTER,
-    GL_TEXTURE_WRAP_S,
-    GL_TEXTURE_WRAP_T,
-    GL_UNSIGNED_BYTE,
-    glTexParameteri,
-)
-from OpenGL.raw.GL.VERSION.GL_1_1 import glBindTexture
-from OpenGL.raw.GL.VERSION.GL_1_3 import glCompressedTexImage2D
-from OpenGL.raw.GL.VERSION.GL_2_0 import GL_FRAGMENT_SHADER, GL_VERTEX_SHADER, glUniform1i, glUseProgram
-
-from pykotor.resource.formats.tpc import TPCTextureFormat
+from pykotor.gl.texture import Texture
 
 if TYPE_CHECKING:
     from glm import mat4, vec3, vec4
-
-    from pykotor.resource.formats.tpc import TPC
 
 KOTOR_VSHADER = """
 #version 330 core
@@ -70,9 +20,13 @@ layout (location = 1) in vec3 position;
 layout (location = 2) in vec3 normal;
 layout (location = 3) in vec3 uv;
 layout (location = 4) in vec3 uv2;
+layout (location = 5) in vec3 localPosition;
 
 out vec2 diffuse_uv;
 out vec2 lightmap_uv;
+out vec3 world_position;
+out vec3 world_normal;
+out vec3 local_position;
 
 uniform mat4 model;
 uniform mat4 view;
@@ -80,9 +34,13 @@ uniform mat4 projection;
 
 void main()
 {
-    gl_Position = projection * view * model *  vec4(position, 1.0);
+    vec4 world = model * vec4(position, 1.0);
+    gl_Position = projection * view * world;
     diffuse_uv = vec2(uv.x, uv.y);
     lightmap_uv = vec2(uv2.x, uv2.y);
+    world_position = world.xyz;
+    world_normal = transpose(inverse(mat3(model))) * normal;
+    local_position = localPosition;
 }
 """
 
@@ -91,23 +49,129 @@ KOTOR_FSHADER = """
 #version 420
 in vec2 diffuse_uv;
 in vec2 lightmap_uv;
+in vec3 world_position;
+in vec3 world_normal;
+in vec3 local_position;
 
 out vec4 FragColor;
 
 layout(binding = 0) uniform sampler2D diffuse;
 layout(binding = 1) uniform sampler2D lightmap;
-uniform int enableLightmap;
+layout(binding = 2) uniform sampler2D bumpmap;
+layout(binding = 3) uniform samplerCube environment_cube;
+layout(binding = 4) uniform sampler2D environment_2d;
+layout(binding = 5) uniform samplerCube diffuse_cube;
+layout(binding = 6) uniform sampler3D dirt_volume;
+layout(binding = 7) uniform sampler3D diffuse_volume;
+uniform bool enableLightmap;
+uniform bool hasNormals;
+uniform bool hasBump;
+uniform bool hasEnvironment;
+uniform bool environmentIsCube;
+uniform bool diffuseBump;
+uniform bool specularBump;
+uniform bool objectSpaceNormal;
+uniform bool selfNormal;
+uniform bool punchthrough;
+uniform bool useGlobalAlpha;
+uniform bool dirtWorldspace;
+uniform int diffuseKind;
+uniform int dirtFormula;
+uniform int renderBMLMType;
+uniform float waterAlpha;
+uniform float globalAlpha;
+uniform float envmapAlpha;
+uniform float bumpIntensity;
+uniform float diffuseIntensity;
+uniform float specularIntensity;
+uniform vec3 specularColor;
+uniform vec3 eyePosition;
+uniform vec3 lightDirection;
+uniform vec3 lightColor;
+uniform vec3 ambientColor;
+uniform mat4 model;
+
+vec3 reflected_normal(vec3 normal, vec3 viewDirection)
+{
+    return reflect(-viewDirection, normal);
+}
+
+vec3 environment(vec3 reflected)
+{
+    if (environmentIsCube) return texture(environment_cube, reflected).rgb;
+    vec3 shifted = reflected + vec3(0.0, 0.0, 1.0);
+    vec2 sphere = reflected.xy / (2.0 * max(length(shifted), 1e-12)) + 0.5;
+    return texture(environment_2d, sphere).rgb;
+}
+
+mat3 tangent_frame(vec3 normal)
+{
+    vec3 px = dFdx(world_position), py = dFdy(world_position);
+    vec2 tx = dFdx(diffuse_uv), ty = dFdy(diffuse_uv);
+    vec3 pyPerp = cross(py, normal), pxPerp = cross(normal, px);
+    vec3 tangent = pyPerp * tx.x + pxPerp * ty.x;
+    vec3 bitangent = pyPerp * tx.y + pxPerp * ty.y;
+    float inverse = inversesqrt(max(max(dot(tangent, tangent), dot(bitangent, bitangent)), 1e-20));
+    return mat3(tangent * inverse, bitangent * inverse, normal);
+}
 
 void main()
 {
-    vec4 diffuseColor = texture(diffuse, diffuse_uv);
-    vec4 lightmapColor = texture(lightmap, lightmap_uv);
-
-    if (enableLightmap == 1) {
-        FragColor = mix(diffuseColor, lightmapColor, 0.5);
-    } else {
-        FragColor = diffuseColor;
+    vec3 normal = normalize(hasNormals ? world_normal : cross(dFdx(world_position), dFdy(world_position)));
+    vec3 viewDirection = normalize(eyePosition - world_position);
+    vec4 base;
+    if (diffuseKind == 1) base = texture(diffuse_cube, reflected_normal(normal, viewDirection));
+    else if (diffuseKind == 2) base = texture(diffuse_volume, world_position);
+    else base = texture(diffuse, diffuse_uv);
+    float alpha = selfNormal ? 1.0 : base.a;
+    if (punchthrough && alpha <= 0.35) discard;
+    if (alpha <= 0.0 && !hasEnvironment && !selfNormal) discard;
+    vec3 color = selfNormal ? vec3(1.0) : base.rgb;
+    vec3 bumped = normal;
+    float normalWeight = 1.0;
+    if (hasBump) {
+        vec4 sampleNormal = texture(bumpmap, diffuse_uv);
+        normalWeight = sampleNormal.a;
+        if (objectSpaceNormal) {
+            bumped = normalize(transpose(inverse(mat3(model))) * (sampleNormal.rgb * 2.0 - 1.0));
+        } else {
+            vec3 tangentNormal = vec3(-(sampleNormal.g * 255.0 - 128.0),
+                                      sampleNormal.b * 255.0 - 128.0,
+                                      sampleNormal.r * 255.0 - 128.0) / 127.0;
+            tangentNormal.xy *= bumpIntensity;
+            bumped = normalize(tangent_frame(normal) * tangentNormal);
+        }
+        if (diffuseBump && (!enableLightmap || renderBMLMType == 0)) {
+            color *= ambientColor + lightColor * max(dot(bumped, lightDirection), 0.0) * diffuseIntensity;
+        }
     }
+    if (hasEnvironment) {
+        vec3 reflection = environment(reflected_normal(bumped, viewDirection)) * envmapAlpha;
+        color = enableLightmap ? color + reflection * (1.0 - alpha) : mix(reflection, color, alpha);
+        alpha = 1.0;
+    }
+    if (dirtFormula >= 0) {
+        vec3 coordinates;
+        if (dirtWorldspace) {
+            coordinates = world_position * 1.5;
+            coordinates = coordinates * 0.25 + coordinates.yzx;
+            coordinates = coordinates * 0.125 + coordinates.zxy;
+            coordinates *= 1.0675;
+        } else coordinates = local_position + vec3(diffuse_uv, 0.0);
+        vec3 dirt = texture(dirt_volume, coordinates).rgb;
+        if (dirtFormula == 0) color -= dirt;
+        else if (dirtFormula == 1) color += dirt;
+        else color *= dirt;
+    }
+    if (enableLightmap) color *= texture(lightmap, lightmap_uv).rgb;
+    if (hasBump && specularBump && (!enableLightmap || renderBMLMType != 0)) {
+        vec3 halfway = normalize(lightDirection + viewDirection);
+        float specular = pow(max(dot(bumped, halfway), 0.0), 32.0);
+        color += lightColor * specularColor * specular * specularIntensity * normalWeight;
+    }
+    alpha *= waterAlpha;
+    if (useGlobalAlpha) alpha *= globalAlpha;
+    FragColor = vec4(color, alpha);
 }
 """
 
@@ -196,60 +260,8 @@ class Shader:
     def set_bool(self, uniform: str, boolean: bool):
         glUniform1i(self.uniform(uniform), boolean)
 
+    def set_int(self, uniform: str, value: int):
+        glUniform1i(self.uniform(uniform), value)
 
-class Texture:
-    def __init__(self, tex_id: int):
-        self._id: int = tex_id
-
-    @classmethod
-    def from_tpc(cls, tpc: TPC, *, image: int = 0) -> Texture:
-        settings = tpc.effective_txi.settings(game=tpc.header.game).texture
-        levels = tpc.mipmap_count(image) if settings["mipmap"] else 1
-        gl_id = glGenTextures(1)
-        glBindTexture(GL_TEXTURE_2D, gl_id)
-        alignment = glGetIntegerv(GL_UNPACK_ALIGNMENT)
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
-        for level in range(levels):
-            width, height, tpc_format, data = tpc.get(level, image=image)
-            if tpc_format in (TPCTextureFormat.DXT1, TPCTextureFormat.DXT5):
-                compressed_format = (GL_COMPRESSED_RGB_S3TC_DXT1_EXT if tpc_format == TPCTextureFormat.DXT1
-                                     else GL_COMPRESSED_RGBA_S3TC_DXT5_EXT)
-                glCompressedTexImage2D(GL_TEXTURE_2D, level, compressed_format, width, height, 0, len(data), data)
-            else:
-                output = TPCTextureFormat.RGB if tpc_format in (TPCTextureFormat.Greyscale, TPCTextureFormat.RGB) else TPCTextureFormat.RGBA
-                pixels = tpc.convert(output, level, image=image).data
-                pixel_format = GL_RGB if output == TPCTextureFormat.RGB else GL_RGBA
-                glTexImage2D(GL_TEXTURE_2D, level, pixel_format, width, height, 0, pixel_format, GL_UNSIGNED_BYTE, pixels)
-        glPixelStorei(GL_UNPACK_ALIGNMENT, alignment)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, levels - 1)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE if settings["clamp"] & 1 else GL_REPEAT)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE if settings["clamp"] & 2 else GL_REPEAT)
-        filtered = GL_LINEAR if settings["filter"] else GL_NEAREST
-        mip_filtered = GL_LINEAR_MIPMAP_LINEAR if settings["filter"] else GL_NEAREST_MIPMAP_NEAREST
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, mip_filtered if settings["mipmap"] else filtered)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtered)
-
-        return Texture(gl_id)
-
-    @classmethod
-    def from_color(cls, r: int = 0, g: int = 0, b: int = 0) -> Texture:
-        gl_id = glGenTextures(1)
-        glBindTexture(GL_TEXTURE_2D, gl_id)
-
-        # Create pixel data using numpy for better performance and alignment
-        pixels = np.full((64, 64, 3), [r, g, b], dtype=np.uint8)
-
-        # Immediate error checking before and after glTexImage2D
-        err = glGetError()
-        if err != GL_NO_ERROR:
-            print(f"Error before glTexImage2D: {gluErrorString(err)}")
-
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 64, 64, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-        return Texture(gl_id)
-
-    def use(self):
-        glBindTexture(GL_TEXTURE_2D, self._id)
+    def set_float(self, uniform: str, value: float):
+        glUniform1f(self.uniform(uniform), value)

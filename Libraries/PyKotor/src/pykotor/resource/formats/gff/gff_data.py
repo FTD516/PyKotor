@@ -411,6 +411,11 @@ class _GFFField:
         return self._value
 
 
+def _label(label: str) -> str:
+    """Match the native case-sensitive, 16-byte ASCII label lookup."""
+    return label.split("\0", 1)[0][:16]
+
+
 class GFFStruct:
     """Stores a collection of GFFFields.
 
@@ -447,7 +452,7 @@ class GFFStruct:
         item: str,
     ) -> Any:
         """Returns the value of the specified field."""
-        return self._fields[item].value() if isinstance(item, str) else NotImplemented
+        return self._fields[_label(item)].value() if isinstance(item, str) else NotImplemented
 
     def remove(
         self,
@@ -459,11 +464,13 @@ class GFFStruct:
         ----
             label: The field label.
         """
+        label = _label(label)
         self._fields.pop(label, None)
         self._field_order[:] = [(name, field) for name, field in self._field_order if name != label]
 
     def add_field(self, label: str, field_type: GFFFieldType, value: Any, *, raw_data: bytes | None = None) -> None:
         """Appends a physical field. Name lookup selects its first occurrence."""
+        label = _label(label)
         field = _GFFField(field_type, value)
         field.raw_data = raw_data
         self._field_order.append((label, field))
@@ -471,6 +478,7 @@ class GFFStruct:
 
     def _set_field(self, label: str, field_type: GFFFieldType, value: Any) -> None:
         """Replaces the first named field without collapsing later records."""
+        label = _label(label)
         existing = self._fields.get(label)
         if existing is None:
             self.add_field(label, field_type, value)
@@ -499,7 +507,7 @@ class GFFStruct:
         -------
             A boolean result of whether the field exists or not.
         """
-        return label in self._fields
+        return _label(label) in self._fields
 
     def compare(
         self,
@@ -641,7 +649,7 @@ class GFFStruct:
         self,
         label: str,
     ) -> GFFFieldType:
-        return self._fields[label].field_type()
+        return self._fields[_label(label)].field_type()
 
     def acquire(
         self,
@@ -681,7 +689,7 @@ class GFFStruct:
         self,
         label: str,
     ) -> Any:
-        return self._fields[label].value()
+        return self._fields[_label(label)].value()
 
     def add_missing(self, other: GFFStruct):
         """Updates this GFFStruct with any missing fields from the other GFFStruct, deepcopying their values.
@@ -1031,10 +1039,10 @@ class GFFStruct:
         -------
             The field value.
         """
-        if self._fields[label].field_type() != GFFFieldType.UInt8:
+        if self._fields[_label(label)].field_type() != GFFFieldType.UInt8:
             msg = "The specified field does not store a UInt8 value."
             raise TypeError(msg)
-        return self._fields[label].value()
+        return self._fields[_label(label)].value()
 
     def get_uint16(
         self,
@@ -1055,10 +1063,10 @@ class GFFStruct:
         -------
             The field value.
         """
-        if self._fields[label].field_type() != GFFFieldType.UInt16:
+        if self._fields[_label(label)].field_type() != GFFFieldType.UInt16:
             msg = "The specified field does not store a UInt16 value."
             raise TypeError(msg)
-        return self._fields[label].value()
+        return self._fields[_label(label)].value()
 
     def get_uint32(
         self,
@@ -1079,10 +1087,10 @@ class GFFStruct:
         -------
             The field value.
         """
-        if self._fields[label].field_type() != GFFFieldType.UInt32:
+        if self._fields[_label(label)].field_type() != GFFFieldType.UInt32:
             msg = "The specified field does not store a UInt32 value."
             raise TypeError(msg)
-        return self._fields[label].value()
+        return self._fields[_label(label)].value()
 
     def get_uint64(
         self,
@@ -1103,10 +1111,10 @@ class GFFStruct:
         -------
             The field value.
         """
-        if self._fields[label].field_type() != GFFFieldType.UInt64:
+        if self._fields[_label(label)].field_type() != GFFFieldType.UInt64:
             msg = "The specified field does not store a UInt64 value."
             raise TypeError(msg)
-        return self._fields[label].value()
+        return self._fields[_label(label)].value()
 
     def get_int8(
         self,
@@ -1127,10 +1135,10 @@ class GFFStruct:
         -------
             The field value.
         """
-        if self._fields[label].field_type() != GFFFieldType.Int8:
+        if self._fields[_label(label)].field_type() != GFFFieldType.Int8:
             msg = "The specified field does not store a Int8 value."
             raise TypeError(msg)
-        return self._fields[label].value()
+        return self._fields[_label(label)].value()
 
     def get_int16(
         self,
@@ -1151,10 +1159,10 @@ class GFFStruct:
         -------
             The field value.
         """
-        if self._fields[label].field_type() != GFFFieldType.Int16:
+        if self._fields[_label(label)].field_type() != GFFFieldType.Int16:
             msg = "The specified field does not store a Int16 value."
             raise TypeError(msg)
-        return self._fields[label].value()
+        return self._fields[_label(label)].value()
 
     def get_int32(
         self,
@@ -1175,10 +1183,10 @@ class GFFStruct:
         -------
             The field value.
         """
-        if self._fields[label].field_type() != GFFFieldType.Int32:
+        if self._fields[_label(label)].field_type() != GFFFieldType.Int32:
             msg = "The specified field does not store a Int32 value."
             raise TypeError(msg)
-        return self._fields[label].value()
+        return self._fields[_label(label)].value()
 
     def get_int64(
         self,
@@ -1199,10 +1207,10 @@ class GFFStruct:
         -------
             The field value.
         """
-        if self._fields[label].field_type() != GFFFieldType.Int64:
+        if self._fields[_label(label)].field_type() != GFFFieldType.Int64:
             msg = "The specified field does not store a Int64 value."
             raise TypeError(msg)
-        return self._fields[label].value()
+        return self._fields[_label(label)].value()
 
     def get_single(
         self,
@@ -1223,10 +1231,10 @@ class GFFStruct:
         -------
             The field value.
         """
-        if self._fields[label].field_type() != GFFFieldType.Single:
+        if self._fields[_label(label)].field_type() != GFFFieldType.Single:
             msg = "The specified field does not store a Single value."
             raise TypeError(msg)
-        return self._fields[label].value()
+        return self._fields[_label(label)].value()
 
     def get_double(
         self,
@@ -1247,10 +1255,10 @@ class GFFStruct:
         -------
             The field value.
         """
-        if self._fields[label].field_type() != GFFFieldType.Double:
+        if self._fields[_label(label)].field_type() != GFFFieldType.Double:
             msg = "The specified field does not store a Double value."
             raise TypeError(msg)
-        return self._fields[label].value()
+        return self._fields[_label(label)].value()
 
     def get_resref(
         self,
@@ -1271,10 +1279,10 @@ class GFFStruct:
         -------
             A copy of the field value.
         """
-        if self._fields[label].field_type() != GFFFieldType.ResRef:
+        if self._fields[_label(label)].field_type() != GFFFieldType.ResRef:
             msg = "The specified field does not store a ResRef value."
             raise TypeError(msg)
-        return deepcopy(self._fields[label].value())
+        return deepcopy(self._fields[_label(label)].value())
 
     def get_string(
         self,
@@ -1295,10 +1303,10 @@ class GFFStruct:
         -------
             The field value.
         """
-        if self._fields[label].field_type() != GFFFieldType.String:
+        if self._fields[_label(label)].field_type() != GFFFieldType.String:
             msg = "The specified field does not store a String value."
             raise TypeError(msg)
-        return self._fields[label].value()
+        return self._fields[_label(label)].value()
 
     def get_locstring(
         self,
@@ -1319,10 +1327,10 @@ class GFFStruct:
         -------
             A copy of the field value.
         """
-        if self._fields[label].field_type() != GFFFieldType.LocalizedString:
+        if self._fields[_label(label)].field_type() != GFFFieldType.LocalizedString:
             msg = "The specified field does not store a LocalizedString value."
             raise TypeError(msg)
-        return self._fields[label].value()
+        return self._fields[_label(label)].value()
 
     def get_vector3(
         self,
@@ -1343,10 +1351,10 @@ class GFFStruct:
         -------
             A copy of the field value.
         """
-        if self._fields[label].field_type() != GFFFieldType.Vector3:
+        if self._fields[_label(label)].field_type() != GFFFieldType.Vector3:
             msg = "The specified field does not store a Vector3 value."
             raise TypeError(msg)
-        return copy(self._fields[label].value())
+        return copy(self._fields[_label(label)].value())
 
     def get_vector4(
         self,
@@ -1367,10 +1375,10 @@ class GFFStruct:
         -------
             A copy of the field value.
         """
-        if self._fields[label].field_type() != GFFFieldType.Vector4:
+        if self._fields[_label(label)].field_type() != GFFFieldType.Vector4:
             msg = "The specified field does not store a Vector4 value."
             raise TypeError(msg)
-        return copy(self._fields[label].value())
+        return copy(self._fields[_label(label)].value())
 
     def get_binary(
         self,
@@ -1391,10 +1399,10 @@ class GFFStruct:
         -------
             The field value.
         """
-        if self._fields[label].field_type() != GFFFieldType.Binary:
+        if self._fields[_label(label)].field_type() != GFFFieldType.Binary:
             msg = "The specified field does not store a Binary value."
             raise TypeError(msg)
-        return self._fields[label].value()
+        return self._fields[_label(label)].value()
 
     def get_struct(
         self,
@@ -1415,10 +1423,10 @@ class GFFStruct:
         -------
             A copy of the field value.
         """
-        if self._fields[label].field_type() != GFFFieldType.Struct:
+        if self._fields[_label(label)].field_type() != GFFFieldType.Struct:
             msg = "The specified field does not store a Struct value."
             raise TypeError(msg)
-        return copy(self._fields[label].value())
+        return copy(self._fields[_label(label)].value())
 
     def get_list(
         self,
@@ -1439,10 +1447,10 @@ class GFFStruct:
         -------
             A copy of the field value.
         """
-        if self._fields[label].field_type() != GFFFieldType.List:
+        if self._fields[_label(label)].field_type() != GFFFieldType.List:
             msg = "The specified field does not store a List value."
             raise TypeError(msg)
-        return copy(self._fields[label].value())
+        return copy(self._fields[_label(label)].value())
 
 
 class GFFList:

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import math
 import re
+import struct
 
-from contextlib import suppress
 from copy import copy
+from ctypes import c_float
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from pykotor.resource.type import ResourceType
@@ -15,6 +18,53 @@ if TYPE_CHECKING:
     from enum import Enum
 
 T = TypeVar("T")
+
+_FLOAT_PREFIX = re.compile(
+    r"[ \t\r\n\v\f]*([+-]?(?:inf(?:inity)?|nan(?:\([a-z0-9_]*\))?|"
+    r"0x[0-9a-f]*\.?[0-9a-f]*(?:p[+-]?[0-9]*)?|"
+    r"(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:e[+-]?[0-9]*)?))", re.IGNORECASE,
+)
+
+
+def _float_value(number: str, *, binary: bool) -> float:
+    """Match scanf's direct float rounding and atof's double-to-float rounding."""
+    if "0x" in number:
+        mantissa, _, exponent = number.partition("p")
+        whole, _, fraction = mantissa.lstrip("+-")[2:].partition(".")
+        digits = whole + fraction
+        if not digits:
+            return 0.0 if binary else math.copysign(0.0, -1 if number.startswith("-") else 1)
+        coefficient = int(digits, 16)
+        shift = int(exponent or "0") - 4 * len(fraction)
+        if coefficient and coefficient.bit_length() + shift > 128:
+            return -math.inf if number.startswith("-") else math.inf
+        value = float.fromhex(number)
+    else:
+        value = float(number.split("(", 1)[0])
+    rounded = c_float(value).value
+    if not binary or not math.isfinite(value) or value == rounded:
+        return rounded
+
+    if math.isinf(rounded):
+        adjacent = math.copysign(float.fromhex("0x1.fffffep127"), value)
+        midpoint = math.copysign(float.fromhex("0x1.ffffffp127"), value)
+    else:
+        bits = struct.unpack("<I", struct.pack("<f", rounded))[0]
+        step = 1 if (value > rounded) == (bits < 0x80000000) else -1
+        adjacent = struct.unpack("<f", struct.pack("<I", bits + step))[0]
+        midpoint = rounded + (adjacent - rounded) * .5
+    if value != midpoint:
+        return rounded
+
+    # A decimal-to-double rounding can land on a float32 midpoint even though
+    # scanf's exact input lies to one side. Resolve only those midpoint cases.
+    if "0x" in number:
+        exact = Fraction(coefficient << max(0, shift), 1 << max(0, -shift))
+        exact = -exact if number.startswith("-") else exact
+    else:
+        exact = Fraction(number)
+    difference = exact - Fraction(midpoint)
+    return adjacent if difference and (difference > 0) == (adjacent > rounded) else rounded
 
 
 class TwoDA:
@@ -649,7 +699,7 @@ class TwoDARow:
         header: str,
         default: int | T = None,
     ) -> float | T:
-        """Returns the float value for the cell under the specified header. If the value of the cell is an invalid float then a default value is used instead.
+        """Return the native float32 numeric prefix, or the default for an empty cell.
 
         Args:
         ----
@@ -668,10 +718,17 @@ class TwoDARow:
             msg = f"The header '{header}' does not exist."
             raise KeyError(msg)
 
-        with suppress(ValueError):
-            cell = self._data[header]
-            return float(cell)
-        return default
+        cell = self._data[header]
+        if not cell:
+            return default
+        match = _FLOAT_PREFIX.match(cell)
+        if match is None:
+            return 0.0
+        number = match[1].lower()
+        exponent = "p" if "0x" in number else "e"
+        if number.endswith((exponent, exponent + "+", exponent + "-")):
+            number = number[:number.rfind(exponent)]
+        return _float_value(number, binary=self._version == "V2.b")
 
     def get_enum(
         self,

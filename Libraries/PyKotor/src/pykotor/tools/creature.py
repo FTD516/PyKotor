@@ -50,7 +50,8 @@ def get_body_model(
 
     Processing Logic:
         - if modeltype column in appearance.2da is something other than B:
-            - there's no override texture and the body model name is in the 'race' column
+            - the body model name is in the 'race' column
+            - the optional texture override is in the 'racetex' column
         - if it is B:
             - if wearing armor:
                 - Check the 'bodyvar' column of 'bodyitems.2da' with the row specified by the armor uti
@@ -83,6 +84,8 @@ def get_body_model(
     if modeltype != "B":
         print(f"appearance.2da: utc 'modeltype' is '{modeltype}', fetching 'race' model{context_base}")
         body_model = utc_appearance_row.get_string("race", context=context_base)
+        race_texture = utc_appearance_row.get_string("racetex", context=context_base).strip()
+        override_texture = race_texture if race_texture not in ("", "****") else None
     else:
         print("appearance.2da: utc 'modeltype' is 'B'")
 

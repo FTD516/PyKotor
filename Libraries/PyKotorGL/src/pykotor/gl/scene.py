@@ -195,7 +195,10 @@ class Scene:
 
         self.picker_shader: Shader = Shader(PICKER_VSHADER, PICKER_FSHADER)
         self.plain_shader: Shader = Shader(PLAIN_VSHADER, PLAIN_FSHADER)
-        self.shader: Shader = Shader(KOTOR_VSHADER, KOTOR_FSHADER)
+        self.shader: Shader = Shader(KOTOR_VSHADER, KOTOR_FSHADER, (
+            "diffuse", "lightmap", "bumpmap", "environment_cube",
+            "environment_2d", "diffuse_cube", "dirt_volume", "diffuse_volume",
+        ))
 
         self.jump_to_entry_location()
 

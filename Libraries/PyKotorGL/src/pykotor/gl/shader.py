@@ -46,7 +46,7 @@ void main()
 
 
 KOTOR_FSHADER = """
-#version 420
+#version 330 core
 in vec2 diffuse_uv;
 in vec2 lightmap_uv;
 in vec3 world_position;
@@ -55,14 +55,14 @@ in vec3 local_position;
 
 out vec4 FragColor;
 
-layout(binding = 0) uniform sampler2D diffuse;
-layout(binding = 1) uniform sampler2D lightmap;
-layout(binding = 2) uniform sampler2D bumpmap;
-layout(binding = 3) uniform samplerCube environment_cube;
-layout(binding = 4) uniform sampler2D environment_2d;
-layout(binding = 5) uniform samplerCube diffuse_cube;
-layout(binding = 6) uniform sampler3D dirt_volume;
-layout(binding = 7) uniform sampler3D diffuse_volume;
+uniform sampler2D diffuse;
+uniform sampler2D lightmap;
+uniform sampler2D bumpmap;
+uniform samplerCube environment_cube;
+uniform sampler2D environment_2d;
+uniform samplerCube diffuse_cube;
+uniform sampler3D dirt_volume;
+uniform sampler3D diffuse_volume;
 uniform bool enableLightmap;
 uniform bool hasNormals;
 uniform bool hasBump;
@@ -237,10 +237,15 @@ void main()
 
 
 class Shader:
-    def __init__(self, vshader: str, fshader: str):
+    def __init__(self, vshader: str, fshader: str, samplers: tuple[str, ...] = ()):
         vertex_shader = shaders.compileShader(vshader, GL_VERTEX_SHADER)
         fragment_shader = shaders.compileShader(fshader, GL_FRAGMENT_SHADER)
-        self._id: int = shaders.compileProgram(vertex_shader, fragment_shader)
+        # Program validation depends on the VAO and textures bound for a draw.
+        program = shaders.compileProgram(vertex_shader, fragment_shader, validate=False)
+        self._id: int = program
+        self.use()
+        for unit, name in enumerate(samplers):
+            self.set_int(name, unit)
 
     def use(self):
         glUseProgram(self._id)

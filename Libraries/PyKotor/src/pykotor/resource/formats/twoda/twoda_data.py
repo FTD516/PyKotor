@@ -664,11 +664,7 @@ class TwoDARow:
         -------
             The cell value as an integer or a default value.
         """
-        if header not in self._data:
-            msg = f"The header '{header}' does not exist."
-            raise KeyError(msg)
-
-        cell = self._data[header]
+        cell = self.get_string(header)
         if not cell:
             return default
 
@@ -714,11 +710,7 @@ class TwoDARow:
         -------
             The cell value as a float or default value.
         """
-        if header not in self._data:
-            msg = f"The header '{header}' does not exist."
-            raise KeyError(msg)
-
-        cell = self._data[header]
+        cell = self.get_string(header)
         if not cell:
             return default
         match = _FLOAT_PREFIX.match(cell)

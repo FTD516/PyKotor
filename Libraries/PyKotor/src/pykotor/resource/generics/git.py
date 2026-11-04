@@ -920,11 +920,11 @@ def construct_git(
         remember_gff_struct(camera, camera_struct)
         git.cameras.append(camera)
 
-        camera.camera_id = camera_struct.acquire("CameraID", 0, field_type=GFFFieldType.Int32)
-        camera.fov = camera_struct.acquire("FieldOfView", 0.0, field_type=GFFFieldType.Single)
+        camera.camera_id = camera_struct.acquire("CameraID", -1, field_type=GFFFieldType.Int32)
+        camera.fov = camera_struct.acquire("FieldOfView", 55.0, field_type=GFFFieldType.Single)
         camera.height = camera_struct.acquire("Height", 0.0, field_type=GFFFieldType.Single)
         camera.mic_range = camera_struct.acquire("MicRange", 0.0, field_type=GFFFieldType.Single)
-        camera.orientation = camera_struct.acquire("Orientation", Vector4.from_null())
+        camera.orientation = camera_struct.acquire("Orientation", Vector4(0.0, 0.0, 0.0, 1.0), field_type=GFFFieldType.Vector4)
         camera.position = camera_struct.acquire("Position", Vector3.from_null(), field_type=GFFFieldType.Vector3)
         camera.pitch = camera_struct.acquire("Pitch", 0.0, field_type=GFFFieldType.Single)
 

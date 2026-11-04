@@ -5,6 +5,7 @@ import struct
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from pykotor.common.geometry import Vector4
 from pykotor.common.misc import ResRef
 from pykotor.common.stream import BinaryWriter
 from pykotor.resource.formats.gff.gff_data import (
@@ -60,7 +61,8 @@ def _value_bytes(kind: GFFFieldType, value: Any, raw_data: bytes | None = None) 
     elif kind is GFFFieldType.Vector3:
         writer.write_vector3(value)
     elif kind is GFFFieldType.Vector4:
-        writer.write_vector4(value)
+        # GFF quaternions store the scalar component before X, Y and Z.
+        writer.write_bytes(struct.pack("<4f", value.w, value.x, value.y, value.z))
     else:
         raise ValueError(f"Unknown field type '{kind}'")
     return bytes(writer.data())
@@ -237,7 +239,8 @@ class GFFBinaryReader(ResourceReader):
             elif field_type is GFFFieldType.Vector3:
                 gff_struct.add_field(label, GFFFieldType.Vector3, self._reader.read_vector3())
             elif field_type is GFFFieldType.Vector4:
-                gff_struct.add_field(label, GFFFieldType.Vector4, self._reader.read_vector4())
+                w, x, y, z = struct.unpack("<4f", self._reader.read_bytes(16))
+                gff_struct.add_field(label, GFFFieldType.Vector4, Vector4(x, y, z, w))
         elif field_type is GFFFieldType.Struct:
             struct_index = self._reader.read_uint32()
             new_struct = self._load_struct(struct_index)

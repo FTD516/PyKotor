@@ -604,6 +604,8 @@ class LocalizedString:
     def set_substring_bytes(self, substring_id: int, data: bytes) -> None:
         language, _ = self.substring_pair(substring_id)
         text = data.decode(self.substring_encoding(language), "surrogateescape")
+        # Native AddString replaces an earlier occurrence before appending it.
+        self._substrings.pop(substring_id, None)
         self._substrings[substring_id] = text
         self._substring_bytes[substring_id] = (text, bytes(data))
 

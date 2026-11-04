@@ -71,7 +71,7 @@ class TestGFF(TestCase):
         self.assertEqual("resref01", gff.root.get_resref("resref"))
         self.assertEqual(b"binarydata", gff.root.get_binary("binary"))
 
-        self.assertEqual(gff.root.get_vector4("orientation"), Vector4(1, 2, 3, 4))
+        self.assertEqual(gff.root.get_vector4("orientation"), Vector4(2, 3, 4, 1))
         self.assertEqual(gff.root.get_vector3("position"), Vector3(11, 22, 33))
 
         locstring = gff.root.get_locstring("locstring")

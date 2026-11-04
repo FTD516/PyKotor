@@ -93,9 +93,9 @@ class GFFXMLReader(ResourceReader):
             locstring = LocalizedString(-1)
             locstring.stringref = -1 if xml_field.get("strref") == "4294967295" else int(xml_field.get("strref"))
             for substring in xml_field:
-                language, gender = LocalizedString.substring_pair(
-                    int(substring.get("language")),
-                )
+                string_id = int(substring.get("language"))
+                language, gender = LocalizedString.substring_pair(string_id)
+                locstring._substrings.pop(string_id, None)
                 locstring.set_data(language, gender, substring.text or "")
             gff_struct.add_field(label, GFFFieldType.LocalizedString, locstring)
         elif xml_field.tag == "data":
@@ -104,10 +104,10 @@ class GFFXMLReader(ResourceReader):
         elif xml_field.tag == "orientation":
             coords = xml_field.findall("double")
             v4 = Vector4(
-                float(coords[0].text),
                 float(coords[1].text),
                 float(coords[2].text),
                 float(coords[3].text),
+                float(coords[0].text),
             )
             gff_struct.add_field(label, GFFFieldType.Vector4, v4)
         elif xml_field.tag == "vector":
@@ -262,4 +262,4 @@ class GFFXMLWriter(ResourceWriter):
         z_element.text = str(value.z)
         w_element = ElementTree.Element("double")
         w_element.text = str(value.w)
-        xml_field.extend([x_element, y_element, z_element, w_element])
+        xml_field.extend([w_element, x_element, y_element, z_element])

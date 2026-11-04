@@ -1957,8 +1957,9 @@ class Installation:
         """Returns a dictionary mapping the items provided in the queries argument to a string.
 
         Select the requested embedded substring before looking up the stringref.
-        The default language is the installation's TLK language. English always
-        uses the male substring; other languages honor the requested gender.
+        The default language is the installation's TLK language. English records
+        of either gender map to male, with the last stored record winning;
+        other languages honor the requested gender.
 
         Args:
         ----
@@ -1971,10 +1972,14 @@ class Installation:
         """
         language = self.talktable().language_id() if language is None else language
         gender = Gender.MALE if language == Language.ENGLISH else gender
+        substring_ids = (0, 1) if language == Language.ENGLISH else (LocalizedString.substring_id(language, gender),)
         results: dict[LocalizedString, str] = {}
         pending = []
         for locstring in queries:
-            embedded = locstring.get(language, gender)
+            embedded = next(
+                (text for string_id, text in reversed(locstring._substrings.items()) if string_id in substring_ids),
+                None,
+            )
             if embedded is not None:
                 results[locstring] = embedded
             elif locstring.stringref != -1:

@@ -1060,7 +1060,7 @@ class Scene:
         else:
             tpc = None
             capsules = [] if self._module is None else self.module.capsules()
-            order = [SearchLocation.OVERRIDE, SearchLocation.CUSTOM_MODULES, SearchLocation.TEXTURES_TPA, SearchLocation.CHITIN]
+            order = [SearchLocation.OVERRIDE, SearchLocation.CUSTOM_MODULES, SearchLocation.TEXTURES_TPA, SearchLocation.TEXTURES_GUI, SearchLocation.CHITIN]
             if self._module is not None:
                 module_tex = self.module.texture(name)
                 if module_tex is not None:

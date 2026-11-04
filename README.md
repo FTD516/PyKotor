@@ -8,6 +8,10 @@ full upstream PyKotor source.
 Python **3.10 or newer** is required. CI targets 3.10–3.13 on Windows, Linux and
 macOS for the core suite.
 
+Support is offered in the OpenKotOR Discord.
+
+[![OpenKotOR Discord](https://discordapp.com/api/guilds/739590575359262792/widget.png?style=banner2)](https://discord.gg/OpenKotOR)
+
 ## Source development
 
 Create/activate a virtual environment, then run:

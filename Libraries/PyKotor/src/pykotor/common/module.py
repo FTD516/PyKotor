@@ -506,12 +506,16 @@ class Module:  # noqa: PLR0904
                                         resource.filepath(), resource.identifier(), display_name)
                 self.add_locations(resource.resname(), resource.restype(), (resource.filepath(),)).activate()
 
-        # Prioritize Override by checking/activating last.
+        # Use the first matching Override location, as Installation.resource() does.
+        activated_overrides: set[ResourceIdentifier] = set()
         for directory in self._installation.override_list():
             for resource in self._installation.override_resources(directory):
                 if resource.identifier() in self.resources or resource.identifier() in git_search:
                     RobustRootLogger().info("Found override location '%s' for module '%s'", resource.filepath(), display_name)
-                    self.add_locations(resource.resname(), resource.restype(), [resource.filepath()]).activate()
+                    target = self.add_locations(resource.resname(), resource.restype(), [resource.filepath()])
+                    if resource.identifier() not in activated_overrides:
+                        target.activate(resource.filepath(), user_selection=False)
+                        activated_overrides.add(resource.identifier())
 
         # Also try get paths for textures in models
         lookup_texture_queries: set[str] = set()
@@ -554,11 +558,14 @@ class Module:  # noqa: PLR0904
             ],
             [
                 SearchLocation.OVERRIDE,
-                SearchLocation.CHITIN,
+                SearchLocation.CUSTOM_MODULES,
                 SearchLocation.TEXTURES_TPA,
+                SearchLocation.TEXTURES_GUI,
+                SearchLocation.CHITIN,
                 #SearchLocation.TEXTURES_TPB,  # lower quality version of tpa
                 #SearchLocation.TEXTURES_TPC,  # even worse quality than tpb
             ],
+            capsules=self.capsules(),
         )
         for identifier, locations in texture_search.items():
             if identifier == "dirt.tpc":
@@ -566,7 +573,8 @@ class Module:  # noqa: PLR0904
             if not locations:
                 continue
             RobustRootLogger().debug(f"Adding {len(locations)} texture locations to module '{display_name}'")
-            self.add_locations(identifier.resname, identifier.restype, (location.filepath for location in locations)).activate()
+            texture = self.add_locations(identifier.resname, identifier.restype, (location.filepath for location in locations))
+            texture.activate(locations[0].filepath, user_selection=False)
 
         # Finally iterate through all resources we may have missed.
         for ident, module_resource in self.resources.items():
@@ -599,13 +607,13 @@ class Module:  # noqa: PLR0904
         original_path: Path = original_git_or_lyt.locations()[0]
         result: set[ResourceIdentifier] = set()
         for location in original_git_or_lyt.locations():
-            original_git_or_lyt.activate(location)
+            original_git_or_lyt.activate(location, user_selection=False)
             loaded_git_or_lyt: useable_type | None = original_git_or_lyt.resource()
             if not isinstance(loaded_git_or_lyt, useable_type):
                 raise RuntimeError(errmsg)  # noqa: TRY004
             if not isinstance(loaded_git_or_lyt, VIS):
                 result.update(loaded_git_or_lyt.iter_resource_identifiers())
-        original_git_or_lyt.activate(original_path)  # reactivate the main one.
+        original_git_or_lyt.activate(original_path, user_selection=False)  # reactivate the main one.
 
         return result
 
@@ -1454,6 +1462,7 @@ class ModuleResource(Generic[T]):
         self._installation: Installation = installation
         self._restype: ResourceType = restype
         self._active: Path | None = None
+        self.user_selection = False
         self._resource_obj: Any = None
         self._locations: list[Path] = []
         self._identifier = ResourceIdentifier(resname, restype)
@@ -1675,6 +1684,8 @@ class ModuleResource(Generic[T]):
     def activate(
         self,
         filepath: os.PathLike | str | None = None,
+        *,
+        user_selection: bool = True,
     ) -> Path | None:
         """Sets the active file to the specified path. Calling this method will reset the loaded resource.
 
@@ -1683,8 +1694,10 @@ class ModuleResource(Generic[T]):
         Args:
         ----
             filepath: The new active file.
+            user_selection: Whether this is an explicit editor selection rather than automatic discovery.
         """
         self._resource_obj = None
+        self.user_selection = filepath is not None and user_selection
         if filepath is None:
             self._active = next(iter(self._locations), None)
         else:

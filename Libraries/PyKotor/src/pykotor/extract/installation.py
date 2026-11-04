@@ -93,6 +93,135 @@ class TexturePackNames(Enum):
     GUI = "swpc_tex_gui.erf"
 
 
+TEXTURE_SEARCH_ORDER: list[SearchLocation] = [
+    SearchLocation.CUSTOM_FOLDERS,
+    SearchLocation.OVERRIDE,
+    SearchLocation.CUSTOM_MODULES,
+    SearchLocation.TEXTURES_TPA,
+    SearchLocation.TEXTURES_GUI,
+    SearchLocation.CHITIN,
+]
+
+
+def load_textures(
+    resnames: Iterable[str],
+    *,
+    game: Game,
+    installation: Installation | None = None,
+    order: list[SearchLocation] | None = None,
+    capsules: Sequence[Capsule] | None = None,
+    folders: Sequence[os.PathLike | str] | None = None,
+    texture_overrides: dict[str, TPC] | None = None,
+) -> CaseInsensitiveDict[TPC | None]:
+    """Load images and their TXIs from the same ordered sources, with or without a game installation.
+
+    Explicit texture selections in the module editor replace the image lookup;
+    sidecars and numbered frames still use the supplied resource search context.
+    """
+    order = TEXTURE_SEARCH_ORDER if order is None else order
+    names = {name.lower() for name in resnames}
+    textures: CaseInsensitiveDict[TPC | None] = CaseInsensitiveDict({name: None for name in names})
+    for name, texture in (texture_overrides or {}).items():
+        if name.lower() in names:
+            textures[name] = copy(texture)
+    unresolved = {name for name in names if textures[name] is None}
+    sidecars: dict[str, FileResource] = {}
+    texture_types = (ResourceType.TPC, ResourceType.TGA)
+
+    def check_list(resources: Iterable[FileResource]):
+        lookup: dict[ResourceIdentifier, FileResource] = {}
+        for resource in resources:
+            identifier = resource.identifier()
+            if identifier.lower_resname in names and identifier.restype in (*texture_types, ResourceType.TXI):
+                lookup.setdefault(identifier, resource)
+        for name in tuple(unresolved):
+            for restype in texture_types:
+                resource = lookup.get(ResourceIdentifier(name, restype))
+                if resource is not None:
+                    textures[name] = read_tpc(resource.data(), file_format=restype, game=game)
+                    unresolved.remove(name)
+                    break
+        for name in names - sidecars.keys():
+            resource = lookup.get(ResourceIdentifier(name, ResourceType.TXI))
+            if resource is not None:
+                sidecars[name] = resource
+
+    def check_groups(groups: Iterable[Iterable[FileResource]]):
+        for resources in groups:
+            check_list(resources)
+
+    def check_folders():
+        for folder in folders or ():
+            path = CaseAwarePath.pathify(folder)
+            files = sorted(path.safe_rglob("*"), key=lambda file: (len(file.parts), str(file).casefold()))
+            check_list(
+                FileResource.from_path(file) for file in files
+                if file.stem.lower() in names
+                and ResourceType.from_extension(file.suffix) in (*texture_types, ResourceType.TXI)
+                and file.safe_isfile()
+            )
+
+    searches = {
+        SearchLocation.CUSTOM_FOLDERS: check_folders,
+        SearchLocation.CUSTOM_MODULES: lambda: check_groups(capsules or ()),
+    }
+    if installation is not None:
+        searches.update({
+            SearchLocation.OVERRIDE: lambda: check_groups(installation._override.values()),
+            SearchLocation.MODULES: lambda: check_groups(installation._modules.values()),
+            SearchLocation.RIMS: lambda: check_groups(installation._rims.values()),
+            SearchLocation.CHITIN: lambda: check_list(itertools.chain(installation._chitin, installation._patch_erf)),
+            SearchLocation.TEXTURES_TPA: lambda: check_list(installation._texturepacks[TexturePackNames.TPA.value]),
+            SearchLocation.TEXTURES_TPB: lambda: check_list(installation._texturepacks[TexturePackNames.TPB.value]),
+            SearchLocation.TEXTURES_TPC: lambda: check_list(installation._texturepacks[TexturePackNames.TPC.value]),
+            SearchLocation.TEXTURES_GUI: lambda: check_list(installation._texturepacks[TexturePackNames.GUI.value]),
+        })
+    for location in order:
+        assert isinstance(location, SearchLocation), f"{type(location).__name__}: {location}"
+        if location in searches:
+            searches[location]()
+
+    for name, resource in sidecars.items():
+        document = read_txi(resource.data())
+        texture = textures[name]
+        settings = document.settings(game=game)
+        if texture is None and (settings.controller is not None or settings.texture["filerange"] > 0):
+            width, height = settings.texture["defaultwidth"], settings.texture["defaultheight"]
+            texture = TPC()
+            texture.set_single(width, height, bytes([127]) * (width * height * 4), TPCTextureFormat.RGBA)
+            texture.header.game = game
+            textures[name] = texture
+        if texture is not None:
+            texture.external_txi = document
+            texture.external_txi_source = str(resource.filepath())
+
+    for name, texture in tuple(textures.items()):
+        if texture is None:
+            continue
+        document = texture.effective_txi
+        count = document.settings(game=game).texture["filerange"]
+        if count > 0:
+            frame_names = [(f"{name}{index}", f"{name}0{index}") for index in range(count)]
+            sources = load_textures(
+                [frame for pair in frame_names for frame in pair], game=game, installation=installation,
+                order=order, capsules=capsules, folders=folders, texture_overrides=texture_overrides,
+            )
+            images = []
+            for pair in frame_names:
+                image = next((sources[frame] for frame in pair if sources[frame] is not None), None)
+                if image is None:
+                    raise FileNotFoundError(f"Missing file-range texture: {pair[0]} or {pair[1]}")
+                view = copy(image)
+                view.embedded_txi, view.external_txi = type(document)(), None
+                width, height, pixels = view.convert(TPCTextureFormat.RGBA)
+                images.append(bytes(pixels))
+            composite = copy(texture)
+            composite.set_single(width, height * count, b"".join(images), TPCTextureFormat.RGBA)
+            composite.original_datatype_code = image.original_datatype_code
+            textures[name] = composite
+    return textures
+
+
 HARDCODED_MODULE_NAMES: dict[str, str] = {
     "STUNT_00": "Ebon Hawk - Cutscene (Vision Sequences)",
     "STUNT_03A": "Leviathan - Cutscene (Destroy Taris)",
@@ -1094,7 +1223,7 @@ class Installation:
         order: list[SearchLocation] | None = None,
         *,
         capsules: Sequence[Capsule] | None = None,
-        folders: list[Path] | None = None,
+        folders: Sequence[os.PathLike | str] | None = None,
     ) -> ResourceResult | None:
         """Returns a resource matching the specified resref and restype.
 
@@ -1135,7 +1264,7 @@ class Installation:
         order: list[SearchLocation] | None = None,
         *,
         capsules: Sequence[Capsule] | None = None,
-        folders: list[Path] | None = None,
+        folders: Sequence[os.PathLike | str] | None = None,
     ) -> dict[ResourceIdentifier, ResourceResult | None]:
         """Returns a dictionary mapping the items provided in the queries argument to the resource data if it was found.
 
@@ -1204,11 +1333,11 @@ class Installation:
         return results
 
     @overload
-    def location(self, file: os.PathLike | str, order: list[SearchLocation] | None = None, /, *, capsules: list[Capsule] | None = None, folders: list[Path] | None = None) -> list[LocationResult]: ...
+    def location(self, file: os.PathLike | str, order: list[SearchLocation] | None = None, /, *, capsules: Sequence[Capsule] | None = None, folders: Sequence[os.PathLike | str] | None = None) -> list[LocationResult]: ...
     @overload
-    def location(self, query: ResourceIdentifier, order: list[SearchLocation] | None = None, /, *, capsules: list[Capsule] | None = None, folders: list[Path] | None = None) -> list[LocationResult]: ...
+    def location(self, query: ResourceIdentifier, order: list[SearchLocation] | None = None, /, *, capsules: Sequence[Capsule] | None = None, folders: Sequence[os.PathLike | str] | None = None) -> list[LocationResult]: ...
     @overload
-    def location(self, resname: str, restype: ResourceType | None = None, order: list[SearchLocation] | None = None, /, *, capsules: list[Capsule] | None = None, folders: list[Path] | None = None) -> list[LocationResult]: ...
+    def location(self, resname: str, restype: ResourceType | None = None, order: list[SearchLocation] | None = None, /, *, capsules: Sequence[Capsule] | None = None, folders: Sequence[os.PathLike | str] | None = None) -> list[LocationResult]: ...
     def location(
         self,
         resname: str,
@@ -1216,8 +1345,8 @@ class Installation:
         order: list[SearchLocation] | None = None,
         /,
         *,
-        capsules: list[Capsule] | None = None,
-        folders: list[Path] | None = None,
+        capsules: Sequence[Capsule] | None = None,
+        folders: Sequence[os.PathLike | str] | None = None,
     ) -> list[LocationResult]:
         """Returns a list filepaths for where a particular resource matching the given resref and restype are located.
 
@@ -1271,7 +1400,7 @@ class Installation:
         order: list[SearchLocation] | None = None,
         *,
         capsules: Sequence[Capsule] | None = None,
-        folders: list[Path] | None = None,
+        folders: Sequence[os.PathLike | str] | None = None,
     ) -> dict[ResourceIdentifier, list[LocationResult]]:
         """Returns a dictionary mapping the items provided in the queries argument to a list of locations for that respective resource.
 
@@ -1344,9 +1473,9 @@ class Installation:
                     location.set_file_resource(resource)
                     locations[resource.identifier()].append(location)
 
-        def check_folders(resource_folders: list[Path]):
+        def check_folders(resource_folders: Sequence[os.PathLike | str]):
             for folder in resource_folders:
-                for file in folder.safe_rglob("*"):
+                for file in CaseAwarePath.pathify(folder).safe_rglob("*"):
                     if not file.safe_isfile():
                         continue
                     identifier = ResourceIdentifier.from_path(file)
@@ -1398,8 +1527,8 @@ class Installation:
         resname: str,
         order: list[SearchLocation] | None = None,
         *,
-        capsules: list[Capsule] | None = None,
-        folders: list[Path] | None = None,
+        capsules: Sequence[Capsule] | None = None,
+        folders: Sequence[os.PathLike | str] | None = None,
     ) -> TPC | None:
         """Returns a TPC object loaded from a resource with the specified name.
 
@@ -1409,12 +1538,11 @@ class Installation:
 
         Texture is searched using the following default order:
             1. "folders" parameter.
-            2. "capsules" parameter.
-            3. Installation override folder.
+            2. Installation override folder.
+            3. "capsules" parameter.
             4. Normal texture pack.
             5. GUI texture pack.
             6. Installation Chitin.
-            7. Installation module files in modules folder.
 
         Args:
         ----
@@ -1435,8 +1563,8 @@ class Installation:
         resnames: Iterable[str],
         order: list[SearchLocation] | None = None,
         *,
-        capsules: list[Capsule] | None = None,
-        folders: list[Path] | None = None,
+        capsules: Sequence[Capsule] | None = None,
+        folders: Sequence[os.PathLike | str] | None = None,
     ) -> CaseInsensitiveDict[TPC | None]:
         """Returns a dictionary mapping the items provided in the queries argument to a TPC object if it exists.
 
@@ -1453,138 +1581,10 @@ class Installation:
         -------
             A dictionary mapping case-insensitive strings to TPC objects or None.
         """
-        if order is None:
-            order = [
-                SearchLocation.CUSTOM_FOLDERS,
-                SearchLocation.OVERRIDE,
-                SearchLocation.CUSTOM_MODULES,
-                SearchLocation.TEXTURES_TPA,
-                SearchLocation.CHITIN,
-            ]
-        resnames: set[str] = set(resnames)
-        case_resnames: set[str] = {resname.lower() for resname in resnames}
-        capsules = [] if capsules is None else capsules
-        folders = [] if folders is None else folders
-
-        textures: CaseInsensitiveDict[TPC | None] = CaseInsensitiveDict()
-        texture_types: list[ResourceType] = [ResourceType.TPC, ResourceType.TGA]
-
-        for resname in resnames:
-            textures[resname] = None
-
-        def check_dict(values: dict[str, list[FileResource]]):
-            for resources in values.values():
-                check_list(resources)
-
-        def check_list(resource_list: list[FileResource]):
-            for resource in resource_list:
-                if resource.restype() not in texture_types:
-                    continue
-                case_resname = resource.identifier().lower_resname
-                if case_resname not in case_resnames:
-                    continue
-                case_resnames.remove(case_resname)
-                tpc: TPC = read_tpc(resource.data(), file_format=resource.restype(), game=self.game())
-                textures[case_resname] = tpc
-
-        def check_capsules(values: list[Capsule]):
-            for capsule in values:
-                for case_resname in copy(case_resnames):
-                    texture_data: bytes | None = None
-                    tformat: ResourceType | None = None
-                    for tformat in texture_types:
-                        texture_data = capsule.resource(case_resname, tformat)
-                        if texture_data is not None:
-                            break
-                    if texture_data is None:
-                        continue
-
-                    case_resnames.remove(case_resname)
-                    tpc: TPC = read_tpc(texture_data, file_format=tformat, game=self.game())
-                    textures[case_resname] = tpc
-
-        def check_folders(resource_folders: list[Path]):
-            queried_texture_files: set[Path] = set()
-            for folder in resource_folders:
-                queried_texture_files.update(
-                    file
-                    for file in folder.safe_rglob("*")
-                    if (
-                        file.stem.casefold() in case_resnames
-                        and ResourceType.from_extension(file.suffix) in texture_types
-                        and file.safe_isfile()
-                    )
-                )
-            for texture_file in queried_texture_files:
-                case_resnames.remove(texture_file.stem.casefold())
-                texture_data: bytes = BinaryReader.load_file(texture_file)
-                tpc = read_tpc(texture_data, file_format=ResourceType.from_extension(texture_file.suffix), game=self.game())
-                textures[texture_file.stem] = tpc
-
-        function_map: dict[SearchLocation, Callable] = {
-            SearchLocation.OVERRIDE: lambda: check_dict(self._override),
-            SearchLocation.MODULES: lambda: check_dict(self._modules),
-            SearchLocation.RIMS: lambda: check_dict(self._rims),
-            SearchLocation.TEXTURES_TPA: lambda: check_list(self._texturepacks[TexturePackNames.TPA.value]),
-            SearchLocation.TEXTURES_TPB: lambda: check_list(self._texturepacks[TexturePackNames.TPB.value]),
-            SearchLocation.TEXTURES_TPC: lambda: check_list(self._texturepacks[TexturePackNames.TPC.value]),
-            SearchLocation.TEXTURES_GUI: lambda: check_list(self._texturepacks[TexturePackNames.GUI.value]),
-            SearchLocation.CHITIN: lambda: check_list(self._chitin) or check_list(self._patch_erf),
-            SearchLocation.CUSTOM_MODULES: lambda: check_capsules(capsules),
-            SearchLocation.CUSTOM_FOLDERS: lambda: check_folders(folders),
-        }
-
-        for item in order:
-            assert isinstance(item, SearchLocation), f"{type(item).__name__}: {item}"
-            function_map.get(item, lambda: None)()
-
-        # TXI is a separate resource lookup. A sidecar in Override can override
-        # the footer of a TPC found in a texture pack, including an empty sidecar.
-        queries = [ResourceIdentifier(name, ResourceType.TXI) for name in textures]
-        locations = self.locations(queries, order, capsules=capsules, folders=folders)
-        for query, matches in locations.items():
-            if not matches:
-                continue
-            location = matches[0]
-            with BinaryReader.from_file(location.filepath) as reader:
-                reader.seek(location.offset)
-                document = read_txi(reader, size=location.size)
-            texture = textures[query.resname]
-            settings = document.settings(game=self.game())
-            if texture is None and (settings.controller is not None or settings.texture["filerange"] > 0):
-                width, height = settings.texture["defaultwidth"], settings.texture["defaultheight"]
-                texture = TPC()
-                texture.set_single(width, height, bytes([127]) * (width * height * 4), TPCTextureFormat.RGBA)
-                texture.header.game = self.game()
-                textures[query.resname] = texture
-            if texture is not None:
-                texture.external_txi = document
-                texture.external_txi_source = str(location.filepath)
-
-        for name, texture in tuple(textures.items()):
-            if texture is None:
-                continue
-            document = texture.effective_txi
-            settings = document.settings(game=self.game())
-            count = settings.texture["filerange"]
-            if count > 0:
-                # Native file ranges accept both name0 and name00 spellings.
-                names = [(f"{name}{index}", f"{name}0{index}") for index in range(count)]
-                sources = self.textures([name for pair in names for name in pair], order, capsules=capsules, folders=folders)
-                images = []
-                for pair in names:
-                    image = next((sources[name] for name in pair if sources[name] is not None), None)
-                    if image is None:
-                        raise FileNotFoundError(f"Missing file-range texture: {pair[0]} or {pair[1]}")
-                    view = copy(image)
-                    view.embedded_txi, view.external_txi = type(document)(), None
-                    width, height, pixels = view.convert(TPCTextureFormat.RGBA)
-                    images.append(bytes(pixels))
-                composite = copy(texture)
-                composite.set_single(width, height * count, b"".join(images), TPCTextureFormat.RGBA)
-                composite.original_datatype_code = image.original_datatype_code
-                textures[name] = composite
-        return textures
+        return load_textures(
+            resnames, game=self.game(), installation=self, order=order,
+            capsules=capsules, folders=folders,
+        )
 
     def find_tlk_entry_references(
         self,

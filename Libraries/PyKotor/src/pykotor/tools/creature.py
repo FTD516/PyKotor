@@ -3,18 +3,36 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from pykotor.common.misc import EquipmentSlot
+from pykotor.extract.installation import TEXTURE_SEARCH_ORDER
 from pykotor.resource.formats.twoda import read_2da
 from pykotor.resource.generics.uti import read_uti
 from pykotor.resource.type import ResourceType
 from utility.logger_util import RobustRootLogger
 
 if TYPE_CHECKING:
+    import os
+    from collections.abc import Sequence
+
     from typing_extensions import Literal
 
+    from pykotor.extract.capsule import Capsule
     from pykotor.extract.installation import Installation
     from pykotor.resource.formats.twoda import TwoDA
     from pykotor.resource.generics.utc import UTC
     from pykotor.resource.generics.uti import UTI
+
+
+def _texture_exists(
+    name: str,
+    installation: Installation,
+    *,
+    capsules: Sequence[Capsule] | None,
+    folders: list[os.PathLike | str] | None,
+) -> bool:
+    return any(installation.locations(
+        ([name], [ResourceType.TPC, ResourceType.TGA]), TEXTURE_SEARCH_ORDER,
+        capsules=capsules, folders=folders,
+    ).values())
 
 
 def get_body_model(
@@ -23,6 +41,8 @@ def get_body_model(
     *,
     appearance: TwoDA | None = None,
     baseitems: TwoDA | None = None,
+    capsules: Sequence[Capsule] | None = None,
+    folders: list[os.PathLike | str] | None = None,
 ) -> tuple[str | None, str | None]:    # sourcery skip: extract-duplicate-method
     """Returns the body model and texture names for the given creature utc.
 
@@ -35,6 +55,8 @@ def get_body_model(
     ----
         utc: UTC object of the target creature.
         installation: The relevant installation.
+        capsules: Active module archives to search before other modules.
+        folders: Source folders to search before installation resources.
         appearance: The appearance.2da loaded into a TwoDA object.
         baseitems: The baseitems.2da loaded into a TwoDA object.
 
@@ -61,13 +83,13 @@ def get_body_model(
             - process override texture based on alignment
     """
     if appearance is None:
-        appearance_lookup = installation.resource("appearance", ResourceType.TwoDA)
+        appearance_lookup = installation.resource("appearance", ResourceType.TwoDA, capsules=capsules, folders=folders)
         if not appearance_lookup:
             raise ValueError("appearance.2da missing from installation.")
         appearance = read_2da(appearance_lookup.data)
 
     if baseitems is None:
-        baseitems_lookup = installation.resource("baseitems", ResourceType.TwoDA)
+        baseitems_lookup = installation.resource("baseitems", ResourceType.TwoDA, capsules=capsules, folders=folders)
         if not baseitems_lookup:
             raise ValueError("baseitems.2da missing from installation.")
         baseitems = read_2da(baseitems_lookup.data)
@@ -85,7 +107,8 @@ def get_body_model(
         print(f"appearance.2da: utc 'modeltype' is '{modeltype}', fetching 'race' model{context_base}")
         body_model = utc_appearance_row.get_string("race", context=context_base)
         race_texture = utc_appearance_row.get_string("racetex", context=context_base).strip()
-        override_texture = race_texture if race_texture not in ("", "****") else None
+        if race_texture not in ("", "****") and _texture_exists(race_texture, installation, capsules=capsules, folders=folders):
+            override_texture = race_texture
     else:
         print("appearance.2da: utc 'modeltype' is 'B'")
 
@@ -100,7 +123,7 @@ def get_body_model(
         if EquipmentSlot.ARMOR in utc.equipment and utc.equipment[EquipmentSlot.ARMOR].resref:
             armor_resref = utc.equipment[EquipmentSlot.ARMOR].resref
             RobustRootLogger().debug(f"utc is wearing armor, fetch '{armor_resref}.uti'")
-            armor_res_lookup = installation.resource(str(armor_resref), ResourceType.UTI)
+            armor_res_lookup = installation.resource(str(armor_resref), ResourceType.UTI, capsules=capsules, folders=folders)
             if armor_res_lookup is None:
                 RobustRootLogger.error(f"'{armor_resref}.uti' missing from installation{context_base}")
                 model_column, body_model, tex_column, tex_append, override_texture = lookupNoArmor()  # fallback
@@ -127,7 +150,7 @@ def get_body_model(
 
         if override_texture and override_texture.strip() and override_texture != "****":
             fallback_override_texture = override_texture + tex_append
-            if tex_append != "01" and installation.texture(fallback_override_texture) is None:  # e.g. g_lena.utc which uses the twi'lek stripper model (i.e. should be n_twilekfc01 not n_twilekfc05)
+            if tex_append != "01" and not _texture_exists(fallback_override_texture, installation, capsules=capsules, folders=folders):  # e.g. g_lena.utc which uses the twi'lek stripper model (i.e. should be n_twilekfc01 not n_twilekfc05)
                 fallback_override_texture = f"{override_texture}01"
                 print(f"override texture '{fallback_override_texture}' not found, appending '01' to the end like the game itself would do.")
             override_texture = fallback_override_texture
@@ -149,6 +172,8 @@ def get_weapon_models(
     *,
     appearance: TwoDA | None = None,
     baseitems: TwoDA | None = None,
+    capsules: Sequence[Capsule] | None = None,
+    folders: list[os.PathLike | str] | None = None,
 ) -> tuple[str | None, str | None]:  # sourcery skip: extract-duplicate-method
     """Returns a tuple containing the right-hand weapon model and the left-hand weapon model (in that order).
 
@@ -161,6 +186,8 @@ def get_weapon_models(
     ----
         utc: UTC object of the target creature.
         installation: The relevant installation.
+        capsules: Active module archives to search before other modules.
+        folders: Source folders to search before installation resources.
         appearance: The appearance.2da loaded into a TwoDA object.
         baseitems: The baseitems.2da loaded into a TwoDA object.
 
@@ -169,13 +196,13 @@ def get_weapon_models(
         Returns a tuple containing right-hand and left-hand weapon model names.
     """
     if appearance is None:
-        appearance_lookup = installation.resource("appearance", ResourceType.TwoDA)
+        appearance_lookup = installation.resource("appearance", ResourceType.TwoDA, capsules=capsules, folders=folders)
         if not appearance_lookup:
             RobustRootLogger().error("appearance.2da missing from installation.")
             return None, None
         appearance = read_2da(appearance_lookup.data)
     if baseitems is None:
-        baseitems_lookup = installation.resource("baseitems", ResourceType.TwoDA)
+        baseitems_lookup = installation.resource("baseitems", ResourceType.TwoDA, capsules=capsules, folders=folders)
         if not baseitems_lookup:
             RobustRootLogger().error("baseitems.2da missing from installation.")
             return None, None
@@ -188,9 +215,9 @@ def get_weapon_models(
     lhand_resname: str | None = str(utc.equipment[EquipmentSlot.LEFT_HAND].resref) if EquipmentSlot.LEFT_HAND in utc.equipment else None
 
     if rhand_resname:
-        rhand_model = _load_hand_uti(installation, rhand_resname, baseitems)
+        rhand_model = _load_hand_uti(installation, rhand_resname, baseitems, capsules=capsules, folders=folders)
     if lhand_resname:
-        lhand_model = _load_hand_uti(installation, lhand_resname, baseitems)
+        lhand_model = _load_hand_uti(installation, lhand_resname, baseitems, capsules=capsules, folders=folders)
     return rhand_model, lhand_model
 
 
@@ -198,6 +225,9 @@ def _load_hand_uti(
     installation: Installation,
     hand_resref: str,
     baseitems: TwoDA,
+    *,
+    capsules: Sequence[Capsule] | None = None,
+    folders: list[os.PathLike | str] | None = None,
 ) -> str | None:
     """Loads the hand UTI model variation from the base item row.
 
@@ -216,7 +246,7 @@ def _load_hand_uti(
         - It replaces the "001" placeholder in the default model with the zero padded model variation from the UTI
         - The formatted default model is returned.
     """
-    hand_lookup = installation.resource(hand_resref, ResourceType.UTI)
+    hand_lookup = installation.resource(hand_resref, ResourceType.UTI, capsules=capsules, folders=folders)
     if not hand_lookup:
         RobustRootLogger.error(f"{hand_resref}.uti missing from installation.")
         return None
@@ -234,6 +264,8 @@ def get_head_model(
     *,
     appearance: TwoDA | None = None,
     heads: TwoDA | None = None,
+    capsules: Sequence[Capsule] | None = None,
+    folders: list[os.PathLike | str] | None = None,
 ) -> tuple[str | None, str | None]:  # sourcery skip: extract-duplicate-method
     """Returns the model and texture names for the head used by a creature.
 
@@ -246,6 +278,8 @@ def get_head_model(
     ----
         utc: UTC object of the target creature.
         installation: The relevant installation.
+        capsules: Active module archives to search before other modules.
+        folders: Source folders to search before installation resources.
         appearance: The appearance.2da loaded into a TwoDA object.
         heads: The heads.2da loaded into a TwoDA object.
 
@@ -254,13 +288,13 @@ def get_head_model(
         Returns a tuple containing the name of the model and the texture to apply to the model.
     """
     if appearance is None:
-        appearance_lookup = installation.resource("appearance", ResourceType.TwoDA)
+        appearance_lookup = installation.resource("appearance", ResourceType.TwoDA, capsules=capsules, folders=folders)
         if not appearance_lookup:
             RobustRootLogger().error("appearance.2da missing from installation.")
             return None, None
         appearance = read_2da(appearance_lookup.data)
     if heads is None:
-        heads_lookup = installation.resource("heads", ResourceType.TwoDA)
+        heads_lookup = installation.resource("heads", ResourceType.TwoDA, capsules=capsules, folders=folders)
         if not heads_lookup:
             RobustRootLogger().error("heads.2da missing from installation.")
             return None, None
@@ -282,13 +316,13 @@ def get_head_model(
             )
         model = head_row.get_string("head")
         head_column_name: str | None = None
-        if utc.alignment < 10:
+        if utc.alignment <= 10:
             head_column_name = "headtexvvve"
-        elif utc.alignment < 20:
+        elif utc.alignment <= 20:
             head_column_name = "headtexvve"
-        elif utc.alignment < 30:
+        elif utc.alignment <= 30:
             head_column_name = "headtexve"
-        elif utc.alignment < 40:
+        elif utc.alignment <= 40:
             head_column_name = "headtexe"
         elif "alttexture" in heads.get_headers():
             if not installation.game().is_k2():  # TSL only override.
@@ -298,7 +332,9 @@ def get_head_model(
         if head_column_name is not None:
             try:
                 texture = head_row.get_string(head_column_name)
-                texture = texture if texture and texture.strip() else None
+                texture = texture.strip()
+                if texture in ("", "****") or (head_column_name != "alttexture" and not _texture_exists(texture, installation, capsules=capsules, folders=folders)):
+                    texture = None
             except KeyError:
                 RobustRootLogger().error("Cannot find %s in heads.2da", head_column_name, exc_info=True)
 
@@ -308,6 +344,9 @@ def get_head_model(
 def get_mask_model(
     utc: UTC,
     installation: Installation,
+    *,
+    capsules: Sequence[Capsule] | None = None,
+    folders: list[os.PathLike | str] | None = None,
 ) -> str | None:
     """Returns the model for the mask a creature is wearing.
 
@@ -320,6 +359,8 @@ def get_mask_model(
     ----
         utc: UTC object of the target creature.
         installation: The relevant installation.
+        capsules: Active module archives to search before other modules.
+        folders: Source folders to search before installation resources.
 
     Returns:
     -------
@@ -332,7 +373,7 @@ def get_mask_model(
         resref = headEquip.resref
         if not resref:
             return None
-        uti: UTI = read_uti(installation.resource(str(resref), ResourceType.UTI).data)
+        uti: UTI = read_uti(installation.resource(str(resref), ResourceType.UTI, capsules=capsules, folders=folders).data)
         model = "I_Mask_" + str(uti.model_variation).rjust(3, "0")
 
     return model

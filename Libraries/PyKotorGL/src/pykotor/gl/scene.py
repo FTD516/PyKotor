@@ -35,11 +35,11 @@ from OpenGL.raw.GL.VERSION.GL_1_2 import GL_BGRA, GL_UNSIGNED_INT_8_8_8_8
 from glm import mat4, quat, vec3, vec4
 
 from pykotor.common.geometry import Vector3
-from pykotor.common.misc import CaseInsensitiveDict
+from pykotor.common.misc import CaseInsensitiveDict, Game
 from pykotor.common.module import Module
 from pykotor.common.stream import BinaryReader
 from pykotor.extract.file import ResourceResult
-from pykotor.extract.installation import SearchLocation
+from pykotor.extract.installation import SearchLocation, load_textures
 from pykotor.gl.models.mdl import Boundary, Cube, Empty, Model
 from pykotor.gl.material import Material
 from pykotor.gl.texture import TextureData
@@ -94,7 +94,6 @@ from pykotor.resource.generics.git import (
     GITWaypoint,
 )
 from pykotor.resource.generics.are import ARE
-from pykotor.resource.formats.txi import TXI
 from pykotor.resource.generics.utd import UTD
 from pykotor.resource.generics.utp import UTP
 from pykotor.resource.generics.uts import UTS
@@ -104,11 +103,14 @@ from utility.logger_util import RobustRootLogger
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from collections.abc import Sequence
+    import os
 
     from typing_extensions import Literal  # pyright: ignore[reportMissingModuleSource]
 
     from pykotor.common.module import Module, ModulePieceResource, ModuleResource
     from pykotor.extract.file import ResourceIdentifier, ResourceResult
+    from pykotor.extract.capsule import Capsule
     from pykotor.extract.installation import Installation
     from pykotor.gl.models.mdl import Model, Node
     from pykotor.resource.formats.lyt import LYT
@@ -119,8 +121,8 @@ if TYPE_CHECKING:
 from typing import TYPE_CHECKING
 
 T = TypeVar("T")
-SEARCH_ORDER_2DA: list[SearchLocation] = [SearchLocation.OVERRIDE, SearchLocation.CHITIN]
-SEARCH_ORDER: list[SearchLocation] = [SearchLocation.OVERRIDE, SearchLocation.CHITIN]
+SEARCH_ORDER_2DA: list[SearchLocation] = [SearchLocation.CUSTOM_FOLDERS, SearchLocation.OVERRIDE, SearchLocation.CUSTOM_MODULES, SearchLocation.CHITIN]
+SEARCH_ORDER: list[SearchLocation] = [SearchLocation.CUSTOM_FOLDERS, SearchLocation.OVERRIDE, SearchLocation.CUSTOM_MODULES, SearchLocation.CHITIN]
 
 
 class Scene:
@@ -131,6 +133,9 @@ class Scene:
         *,
         installation: Installation | None = None,
         module: Module | None = None,
+        capsules: Sequence[Capsule] | None = None,
+        folders: list[os.PathLike | str] | None = None,
+        game: Game = Game.K2,
     ):
         """Initializes the renderer.
 
@@ -161,14 +166,19 @@ class Scene:
         self.models_data_lock: threading.Lock = threading.Lock()
 
         self.installation: Installation | None = installation
+        self.game = installation.game() if installation is not None else game
+        self._capsules = list(capsules or ())
+        self.folders = list(folders or ())
         self.textures: CaseInsensitiveDict[Texture] = CaseInsensitiveDict()
         self.models: CaseInsensitiveDict[Model] = CaseInsensitiveDict()
         self.objects: dict[Any, RenderObject] = {}
         self.selection: list[RenderObject] = []
         self._module: Module | None = module
+        for capsule in self.capsules:
+            capsule.reload()
         self.area = ARE() if module is None else module.are().resource()
         self.dirty_parameters = self._dirty_settings()
-        self.materials: dict[tuple[str, str], Material] = {}
+        self.materials: dict[tuple[str, str, str | None], Material] = {}
         self._draw_calls = []
         self._collect_draws = False
         self.frame_index = 0
@@ -229,11 +239,17 @@ class Scene:
         RobustRootLogger().debug("Completed pre-initialize Scene%s", module_id_part)
 
     def setInstallation(self, installation: Installation):
-        self.table_doors = read_2da(installation.resource("genericdoors", ResourceType.TwoDA, SEARCH_ORDER_2DA).data)
-        self.table_placeables = read_2da(installation.resource("placeables", ResourceType.TwoDA, SEARCH_ORDER_2DA).data)
-        self.table_creatures = read_2da(installation.resource("appearance", ResourceType.TwoDA, SEARCH_ORDER_2DA).data)
-        self.table_heads = read_2da(installation.resource("heads", ResourceType.TwoDA, SEARCH_ORDER_2DA).data)
-        self.table_baseitems = read_2da(installation.resource("baseitems", ResourceType.TwoDA, SEARCH_ORDER_2DA).data)
+        self.installation = installation
+        self.game = installation.game()
+        self.table_doors = read_2da(self._fetch2da("genericdoors", installation).data)
+        self.table_placeables = read_2da(self._fetch2da("placeables", installation).data)
+        self.table_creatures = read_2da(self._fetch2da("appearance", installation).data)
+        self.table_heads = read_2da(self._fetch2da("heads", installation).data)
+        self.table_baseitems = read_2da(self._fetch2da("baseitems", installation).data)
+
+    @property
+    def capsules(self) -> list[Capsule]:
+        return self._capsules + ([] if self._module is None else self.module.capsules())
 
 
     def getCreatureRenderObject(
@@ -274,6 +290,8 @@ class Scene:
                 self.installation,
                 appearance=self.table_creatures,
                 baseitems=self.table_baseitems,
+                capsules=self.capsules,
+                folders=self.folders,
             )
             if not body_model or not body_model.strip():
                 raise ValueError("creature.get_body_model failed to return a valid body_model resref str.")  # noqa: TRY301
@@ -282,23 +300,31 @@ class Scene:
                 self.installation,
                 appearance=self.table_creatures,
                 heads=self.table_heads,
+                capsules=self.capsules,
+                folders=self.folders,
             )
             rhand_model, lhand_model = creature.get_weapon_models(
                 utc,
                 self.installation,
                 appearance=self.table_creatures,
                 baseitems=self.table_baseitems,
+                capsules=self.capsules,
+                folders=self.folders,
             )
             mask_model = creature.get_mask_model(
                 utc,
                 self.installation,
+                capsules=self.capsules,
+                folders=self.folders,
             )
 
-            obj = RenderObject(body_model, data=instance, override_texture=body_texture)
+            envmap = self.table_creatures.get_row(utc.appearance_id).get_string("envmap").strip()
+            envmap = None if envmap.upper() in ("", "****", "DEFAULT") else envmap
+            obj = RenderObject(body_model, data=instance, override_texture=body_texture, override_envmap=envmap)
 
             head_hook = self.model(body_model).find("headhook")
             if head_model and head_hook:
-                head_obj = RenderObject(head_model, override_texture=head_texture)
+                head_obj = RenderObject(head_model, override_texture=head_texture, override_envmap=envmap)
                 head_obj.set_transform(head_hook.global_transform())
                 obj.children.append(head_obj)
 
@@ -412,6 +438,9 @@ class Scene:
         if self.layout is None:
             self.layout = self._getLyt()
 
+        if self.clearCacheBuffer:
+            for capsule in self.capsules:
+                capsule.reload()
         for identifier in self.clearCacheBuffer:
             for git_creature in self.git.creatures.copy():
                 if identifier.resname == git_creature.resref and identifier.restype is ResourceType.UTC:
@@ -558,7 +587,7 @@ class Scene:
             self._del_git_objects(obj, self.git, self.objects)
 
     def _fetch2da(self, resname: str, installation: Installation) -> ResourceResult:
-        result = installation.resource(resname, ResourceType.TwoDA, SEARCH_ORDER_2DA)
+        result = installation.resource(resname, ResourceType.TwoDA, SEARCH_ORDER_2DA, capsules=self.capsules, folders=self.folders)
         if result is None:
             raise RuntimeError(f"Cannot find '{resname}.2da' in the installation, required to render a Scene.")
         return result
@@ -701,10 +730,10 @@ class Scene:
     def dirt_texture(self, index):
         return self.loadTexture(f"@dirty{index}")
 
-    def draw_mesh(self, mesh, transform, diffuse):
-        key = diffuse.lower(), mesh.lightmap.lower()
+    def draw_mesh(self, mesh, transform, diffuse, override_envmap=None):
+        key = diffuse.lower(), mesh.lightmap.lower(), None if override_envmap is None else override_envmap.lower()
         if key not in self.materials:
-            self.materials[key] = Material(self, diffuse, mesh.lightmap)
+            self.materials[key] = Material(self, diffuse, mesh.lightmap, override_envmap=override_envmap)
         material = self.materials[key]
         if self._collect_draws:
             self._draw_calls.append((material, mesh, transform))
@@ -754,7 +783,7 @@ class Scene:
 
         model: Model = self.model(obj.model)
         transform = transform * obj.transform()
-        model.draw(shader, transform, override_texture=obj.override_texture)
+        model.draw(shader, transform, override_texture=obj.override_texture, override_envmap=obj.override_envmap)
 
         for child in obj.children:
             self._render_object(shader, child, transform)
@@ -1026,9 +1055,8 @@ class Scene:
                 mdl_data = UNKNOWN_MDL_DATA
                 mdx_data = UNKNOWN_MDX_DATA
             elif self.installation is not None:
-                capsules: list[ModulePieceResource] = [] if self._module is None else self.module.capsules()
-                mdl_search: ResourceResult | None = self.installation.resource(name, ResourceType.MDL, SEARCH_ORDER, capsules=capsules)
-                mdx_search: ResourceResult | None = self.installation.resource(name, ResourceType.MDX, SEARCH_ORDER, capsules=capsules)
+                mdl_search: ResourceResult | None = self.installation.resource(name, ResourceType.MDL, SEARCH_ORDER, capsules=self.capsules, folders=self.folders)
+                mdx_search: ResourceResult | None = self.installation.resource(name, ResourceType.MDX, SEARCH_ORDER, capsules=self.capsules, folders=self.folders)
                 if mdl_search is not None and mdx_search is not None:
                     mdl_data: bytes = mdl_search.data
                     mdx_data: bytes = mdx_search.data
@@ -1058,21 +1086,14 @@ class Scene:
             tpc.txi = "proceduretype " + ("dirty", "dirty2", "dirty3")[index]
             dirty = self.dirty_parameters[index]
         else:
-            tpc = None
-            capsules = [] if self._module is None else self.module.capsules()
-            order = [SearchLocation.OVERRIDE, SearchLocation.CUSTOM_MODULES, SearchLocation.TEXTURES_TPA, SearchLocation.TEXTURES_GUI, SearchLocation.CHITIN]
-            if self._module is not None:
-                module_tex = self.module.texture(name)
-                if module_tex is not None:
-                    tpc = copy(module_tex.resource())
-                    external = self.installation.resource(name, ResourceType.TXI, order, capsules=capsules)
-                    if external is not None:
-                        tpc.external_txi = TXI(external.data)
-                        tpc.external_txi_source = str(external.filepath)
-                    if tpc.effective_txi.settings(game=tpc.header.game).texture["filerange"]:
-                        tpc = self.installation.texture(name, order, capsules=capsules)
-            if tpc is None and self.installation is not None:
-                tpc = self.installation.texture(name, order, capsules=capsules)
+            selections = {} if self._module is None else {
+                texture.resname(): texture.resource()
+                for texture in self.module.textures() if texture.user_selection
+            }
+            tpc = load_textures(
+                [name], game=self.game, installation=self.installation,
+                capsules=self.capsules, folders=self.folders, texture_overrides=selections,
+            )[name]
             if tpc is None:
                 raise FileNotFoundError(f"Texture resource '{name}' was not found.")
             controller = tpc.effective_txi.settings(game=tpc.header.game).controller
@@ -1102,6 +1123,7 @@ class RenderObject:
         data: Any = None,
         gen_boundary: Callable[[], Boundary] | None = None,
         override_texture: str | None = None,
+        override_envmap: str | None = None,
     ):
         self.model: str = model
         self.children: list[RenderObject] = []
@@ -1113,6 +1135,7 @@ class RenderObject:
         self.genBoundary: Callable[[], Boundary] | None = gen_boundary
         self.data: Any = data
         self.override_texture: str | None = override_texture
+        self.override_envmap: str | None = override_envmap
 
         self._recalc_transform()
 

@@ -15,9 +15,10 @@ if TYPE_CHECKING:
 
 
 class Material:
-    def __init__(self, scene: Scene, diffuse: str, lightmap: str):
+    def __init__(self, scene: Scene, diffuse: str, lightmap: str, *, override_envmap: str | None = None):
         self.scene = scene
         self.diffuse_name, self.lightmap_name = diffuse, lightmap
+        self.override_envmap = override_envmap
 
     def refresh(self):
         self.diffuse = self.scene.loadTexture(self.diffuse_name)
@@ -29,6 +30,8 @@ class Material:
         self.bump = (self.diffuse if self.self_normal else self.scene.loadTexture(bump_name, normal=True)
                      if self.has_bump else self.scene.blank_normal)
         env_name = self.fields["envmaptexture"] or self.fields["bumpyshinytexture"]
+        if self.override_envmap is not None:
+            env_name = self.override_envmap
         self.has_environment = bool(env_name and env_name.upper() != "NULL")
         self.environment = self.scene.loadTexture(env_name) if self.has_environment else self.scene.blank_texture
         self.transparent = (self.fields["blending"] == "additive" or self.fields["wateralpha"] < 1

@@ -41,8 +41,9 @@ class Model:
         transform: mat4,
         *,
         override_texture: str | None = None,
+        override_envmap: str | None = None,
     ):
-        self.root.draw(shader, transform, override_texture)
+        self.root.draw(shader, transform, override_texture, override_envmap)
 
     def find(self, name: str) -> Node | None:
         nodes: list[Node] = [self.root]
@@ -230,14 +231,15 @@ class Node:
         shader: Shader,
         transform: mat4,
         override_texture: str | None = None,
+        override_envmap: str | None = None,
     ):
         transform = transform * self._transform
 
         if self.mesh and self.render:
-            self.mesh.draw(shader, transform, override_texture)
+            self.mesh.draw(shader, transform, override_texture, override_envmap)
 
         for child in self.children:
-            child.draw(shader, transform, override_texture=override_texture)
+            child.draw(shader, transform, override_texture=override_texture, override_envmap=override_envmap)
 
 
 class Mesh:
@@ -346,9 +348,10 @@ class Mesh:
         shader: Shader,
         transform: mat4,
         override_texture: str | None = None,
+        override_envmap: str | None = None,
     ):
         if shader is self._scene.shader:
-            self._scene.draw_mesh(self, transform, override_texture or self.texture)
+            self._scene.draw_mesh(self, transform, override_texture or self.texture, override_envmap)
         else:
             self.draw_geometry(shader, transform)
 

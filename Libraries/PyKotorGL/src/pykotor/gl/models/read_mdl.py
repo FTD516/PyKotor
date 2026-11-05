@@ -120,7 +120,7 @@ def _load_node(
 
         dirt_index, dirt_worldspace = 0, False
         if k2:
-            mdl.seek(offset + 80 + 322)
+            mdl.seek(offset + 80 + 314)
             dirt_enabled = mdl.read_uint8()
             mdl.skip(1)
             dirt_index = mdl.read_uint16()
@@ -288,7 +288,7 @@ def gl_load_stitched_model(scene: Scene, mdl: BinaryReader, mdx: BinaryReader) -
         k2 = mdl.read_uint32() in {4216880, 4216816, 4216864}
         dirt_index, dirt_worldspace = 0, False
         if k2:
-            mdl.seek(offset + 80 + 322)
+            mdl.seek(offset + 80 + 314)
             dirt_enabled = mdl.read_uint8()
             mdl.skip(1)
             dirt_index = mdl.read_uint16()

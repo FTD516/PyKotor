@@ -340,7 +340,7 @@ class MDLBinaryReader:
         m._source = dict(offset=p, header=h, vertex_count=b.values(p + 304, 'H')[0], mdx_offset=b.u32(p + size - 8), vertices_offset=b.u32(p + size - 4))
         for off, attr in ((20, 'bb_min'), (32, 'bb_max'), (48, 'average')):
             setattr(m, attr, Vector3(*b.values(p + off, '3f')))
-        m.radius, m.area = (b.f32(p + 44), b.f32(p + 316))
+        m.radius, m.area = (b.f32(p + 44), b.f32(p + (324 if self.game == Game.K2 else 316)))
         m.diffuse, m.ambient = (Color.from_bgr_vector3(Vector3(*b.values(p + o, '3f'))) for o in (60, 72))
         m.transparency_hint = b.u32(p + 84)
         m.texture_1, m.texture_2 = (b.text(p + 88, 32), b.text(p + 120, 32))
@@ -353,10 +353,10 @@ class MDLBinaryReader:
         for off, attr in enumerate(('has_lightmap', 'rotate_texture', 'background_geometry', 'shadow', 'beaming', 'render')):
             setattr(m, attr, bool(b.data[p + 308 + off]))
         if self.game == Game.K2:
-            m.dirt_enabled = bool(b.data[p + 322])
-            m.dirt_texture = b.values(p + 324, 'H')[0]
-            m.dirt_coordinate_space = b.values(p + 326, 'H')[0]
-            m.hide_in_hologram = bool(b.data[p + 328])
+            m.dirt_enabled = bool(b.data[p + 314])
+            m.dirt_texture = b.values(p + 316, 'H')[0]
+            m.dirt_coordinate_space = b.values(p + 318, 'H')[0]
+            m.hide_in_hologram = bool(b.data[p + 320])
         counts = [r[0] for r in b.array(b.u32(p + 176), b.u32(p + 180), 'I')]
         pointers = [r[0] for r in b.array(b.u32(p + 188), b.u32(p + 192), 'I')]
         if len(counts) != len(pointers):
@@ -590,9 +590,9 @@ class MDLBinaryWriter:
         src = _Buffer(s.get('header', bytes(340 if self.game == Game.K2 else 332)))
         base = bytes(src.data)
         if len(base) == 332 and self.game == Game.K2:
-            base = base[:324] + bytes(8) + base[324:]
+            base = base[:316] + bytes(8) + base[316:]
         elif len(base) == 340 and self.game == Game.K1:
-            base = base[:324] + base[332:]
+            base = base[:316] + base[324:]
         h.data[p:p + len(base)] = base
         if not s or n._source.get('game') != self.game or (_flags(n) ^ n._source.get('flags', 0)) & (32 | 64 | 256):
             kind = 64 if n.skin else 256 if n.dangly else 32
@@ -600,7 +600,7 @@ class MDLBinaryWriter:
         for off, attr in ((20, 'bb_min'), (32, 'bb_max'), (48, 'average')):
             h.put(p + off, '3f', *getattr(m, attr))
         h.put(p + 44, 'f', m.radius)
-        h.put(p + 316, 'f', m.area)
+        h.put(p + (324 if self.game == Game.K2 else 316), 'f', m.area)
         h.put(p + 60, '3f', m.diffuse.b, m.diffuse.g, m.diffuse.r)
         h.put(p + 72, '3f', m.ambient.b, m.ambient.g, m.ambient.r)
         h.put(p + 84, 'I', m.transparency_hint)
@@ -614,9 +614,9 @@ class MDLBinaryWriter:
             self._boolean(h, p + 308 + i, getattr(m, a))
         h.put(p + 306, 'H', m.texture_count)
         if self.game == Game.K2:
-            self._boolean(h, p + 322, m.dirt_enabled)
-            h.put(p + 324, 'HH', m.dirt_texture, m.dirt_coordinate_space)
-            self._boolean(h, p + 328, m.hide_in_hologram)
+            self._boolean(h, p + 314, m.dirt_enabled)
+            h.put(p + 316, 'HH', m.dirt_texture, m.dirt_coordinate_space)
+            self._boolean(h, p + 320, m.hide_in_hologram)
         count = len(m.vertex_positions)
         if s and (not m.vertex_positions) and (not s['vertices_offset']) and (self.x is None):
             count = s['vertex_count']

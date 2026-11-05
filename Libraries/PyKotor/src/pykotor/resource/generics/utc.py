@@ -200,6 +200,7 @@ class UTC:
         self.feats: list[int] = []
         self.inventory: list[InventoryItem] = []
         self.equipment: dict[EquipmentSlot, InventoryItem] = {}
+        self._equipment_rows: list[tuple[EquipmentSlot, InventoryItem]] = []
 
         # Deprecated:
         self.palette_id: int = 0
@@ -395,6 +396,7 @@ def construct_utc(
         droppable = bool(equipment_struct.acquire("Dropable", 0, field_type=GFFFieldType.UInt8))
         utc.equipment[slot] = InventoryItem(resref, droppable)
         remember_gff_struct(utc.equipment[slot], equipment_struct)
+        utc._equipment_rows.append((slot, utc.equipment[slot]))
 
     item_list: GFFList = root.acquire("ItemList", GFFList(), field_type=GFFFieldType.List)
     for item_struct in item_list:
@@ -549,9 +551,15 @@ def dismantle_utc(
             skill_list.add(0).set_uint8("Rank", val)
 
     equipment_list: GFFList = root.set_list("Equip_ItemList", GFFList())
-    for slot, item in utc.equipment.items():
+    last_equipment_rows = {slot: i for i, (slot, _) in enumerate(utc._equipment_rows)}
+    equipment_rows = [
+        (slot, utc.equipment[slot] if i == last_equipment_rows[slot] else item)
+        for i, (slot, item) in enumerate(utc._equipment_rows) if slot in utc.equipment
+    ]
+    equipment_rows.extend((slot, item) for slot, item in utc.equipment.items() if slot not in last_equipment_rows)
+    for slot, item in equipment_rows:
         equipment_struct = equipment_list.add(slot.value)
-        bind_gff_struct(equipment_struct, item)
+        bind_gff_struct(equipment_struct, item, preserve_id=False)
         equipment_struct.set_resref("EquippedRes", item.resref)
         if item.droppable:
             equipment_struct.set_uint8("Dropable", value=True)

@@ -77,10 +77,15 @@ def remember_gff_struct(model: Any, source: GFFStruct) -> None:
     model._gff_record = deepcopy(source)
 
 
-def bind_gff_struct(target: GFFStruct, model: Any) -> None:
-    """Associates a generated list row with its model, including after a reorder."""
+def bind_gff_struct(target: GFFStruct, model: Any, *, preserve_id: bool = True) -> None:
+    """Bind a row to its source occurrence, retaining its struct ID after a move.
+
+    Equipment slots use the ID as an editable key and pass ``preserve_id=False``.
+    """
     target._source_key = getattr(model, "_gff_key", None)
     target._source_record = getattr(model, "_gff_record", None)
+    if preserve_id and target._source_record is not None:
+        target.struct_id = target._source_record.struct_id
 
 
 def remember_gff(model: Any, source: GFF) -> None:
@@ -138,9 +143,9 @@ def preserve_gff(model: Any, generated: GFF, build: Callable[[Any], GFF]) -> GFF
     original_rows = _index_structs(original.root)
     baseline_rows = _index_structs(baseline.root)
 
-    def merge_list(source: GFFList, before: GFFList, after: GFFList) -> GFFList:
+    def merge_list(source: GFFList, before: GFFList | None, after: GFFList) -> GFFList:
         result = GFFList()
-        if len(before) == len(after) and all(row._source_key is None for row in (*before, *after)):
+        if before is not None and len(before) == len(after) and all(row._source_key is None for row in (*before, *after)):
             # Fixed positional lists can model only part of a source list, or
             # contain implicit default rows that were never stored in the file.
             last_edit = max((i for i, (a, b) in enumerate(zip(before, after)) if not _same_struct(a, b)), default=-1)
@@ -155,12 +160,12 @@ def preserve_gff(model: Any, generated: GFF, build: Callable[[Any], GFF]) -> GFF
         for index, row in enumerate(after):
             key = row._source_key
             if key is not None:
-                old_row = baseline_rows.get(key)
                 source_row = original_rows.get(key)
                 if source_row is None:
                     source_row = getattr(row, "_source_record", None)
+                old_row = baseline_rows.get(source_row._source_key if source_row is not None else key)
             else:
-                old_row = before.at(index) if len(before) == len(after) else None
+                old_row = before.at(index) if before is not None and len(before) == len(after) else None
                 if old_row is not None and old_row._source_key is not None:
                     old_row = None
                 source_row = source.at(index) if old_row is not None else None
@@ -172,6 +177,8 @@ def preserve_gff(model: Any, generated: GFF, build: Callable[[Any], GFF]) -> GFF
 
     def merge_struct(source: GFFStruct, before: GFFStruct | None, after: GFFStruct) -> GFFStruct:
         result = deepcopy(source)
+        if after._source_key is not None:
+            result._source_key = after._source_key
         if before is not None and after.struct_id != before.struct_id:
             result.struct_id = after.struct_id
         if before is not None:
@@ -181,19 +188,14 @@ def preserve_gff(model: Any, generated: GFF, build: Callable[[Any], GFF]) -> GFF
         for label, field in after._fields.items():
             kind, value = field.field_type(), field.value()
             previous = before._fields.get(label) if before is not None else None
+            original_field = source._fields.get(label)
+            matching = original_field is not None and original_field.field_type() is kind
+            old_value = None
             if previous is not None and previous.field_type() is kind:
                 old_value = previous.value()
                 if _same_value(kind, old_value, value):
                     continue
-                original_field = source._fields.get(label)
-                matching = original_field is not None and original_field.field_type() is kind
-                if kind is GFFFieldType.Struct:
-                    source_value = original_field.value() if matching else GFFStruct(value.struct_id)
-                    value = merge_struct(source_value, old_value, value)
-                elif kind is GFFFieldType.List:
-                    source_value = original_field.value() if matching else GFFList()
-                    value = merge_list(source_value, old_value, value)
-                elif kind is GFFFieldType.LocalizedString and matching:
+                if kind is GFFFieldType.LocalizedString and matching:
                     edited = deepcopy(original_field.value())
                     edited.stringref = value.stringref
                     for string_id in old_value._substrings.keys() - value._substrings.keys():
@@ -204,6 +206,12 @@ def preserve_gff(model: Any, generated: GFF, build: Callable[[Any], GFF]) -> GFF
                             edited._substrings[string_id] = text
                             edited._substring_bytes.pop(string_id, None)
                     value = edited
+            if kind is GFFFieldType.Struct:
+                source_value = original_field.value() if matching else GFFStruct(value.struct_id)
+                value = merge_struct(source_value, old_value, value)
+            elif kind is GFFFieldType.List:
+                source_value = original_field.value() if matching else GFFList()
+                value = merge_list(source_value, old_value, value)
             # New/imported rows keep unmodeled source fields as well.
             result._set_field(label, kind, deepcopy(value))
         return result

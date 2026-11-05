@@ -521,6 +521,29 @@ class DLGNode:
     def __hash__(self):
         return self._hash_cache
 
+    def clone(self) -> DLGNode:
+        """Copy a branch as new occurrences, retaining its graph and source fields."""
+        branch = DLG()
+        branch.starters = [DLGLink(self)]
+        result = deepcopy(branch).starters[0].node
+        pending = [result]
+        seen: set[int] = set()
+        while pending:
+            node = pending.pop()
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            node.list_index = -1
+            for obj in (node, *node.links, *node.animations):
+                obj._hash_cache = hash(uuid.uuid4().hex)
+                # Keep the source record as provenance for hidden fields, while
+                # assigning a new occurrence key for serialization.
+                obj._gff_key = uuid.uuid4().hex
+            for link in node.links:
+                link.list_index = -1
+                pending.append(link.node)
+        return result
+
     def add_node(
         self,
         target_links: list[DLGLink],
@@ -1379,9 +1402,7 @@ def dismantle_dlg(
             gff_struct.set_int32("VOTextChanged", node.vo_text_changed)
 
         link_list: GFFList = gff_struct.set_list(list_name, GFFList())
-        # Sort links by link_list_index, treating -1 as the highest value
-        sorted_links = sorted(node.links, key=lambda link: (link.list_index == -1, link.list_index))
-        for i, link in enumerate(sorted_links):
+        for i, link in enumerate(node.links):
             link_struct: GFFStruct = link_list.add(i)
             bind_gff_struct(link_struct, link)
             dismantle_link(link_struct, link, nodes, list_name)
@@ -1429,8 +1450,7 @@ def dismantle_dlg(
         stunt_struct.set_resref("StuntModel", stunt.stunt_model)
 
     starting_list: GFFList = root.set_list("StartingList", GFFList())
-    sorted_links: list[DLGLink] = sorted(dlg.starters, key=lambda link: (link.list_index == -1, link.list_index))
-    for link_list_index, starter in enumerate(sorted_links):
+    for link_list_index, starter in enumerate(dlg.starters):
         starting_struct: GFFStruct = starting_list.add(link_list_index)
         bind_gff_struct(starting_struct, starter)
         dismantle_link(starting_struct, starter, all_entries, "StartingList")

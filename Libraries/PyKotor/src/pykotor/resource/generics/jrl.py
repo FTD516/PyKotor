@@ -116,7 +116,7 @@ def construct_jrl(gff: GFF) -> JRL:
     return jrl
 
 
-def dismantle_jrl(  # TODO: store original list indices and sort.
+def dismantle_jrl(
     jrl: JRL,
     game: Game = Game.K2,
     *,

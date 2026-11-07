@@ -381,6 +381,7 @@ class ConfigReader:
         # HoloPatcher optional
         self.config.ignore_file_extensions = convert_to_bool(settings_ini.get("IgnoreExtensions", False))
 
+        self.config.lookup_game_folder = convert_to_bool(settings_ini.get("LookupGameFolder", False))
         lookup_game_number: str | None = settings_ini.get("LookupGameNumber")
         if lookup_game_number:
             lookup_game_number = lookup_game_number.strip()

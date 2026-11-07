@@ -47,6 +47,7 @@ class PatcherConfig:
     def __init__(self):
         self.window_title: str = ""
         self.confirm_message: str = ""
+        self.lookup_game_folder: bool = False
         self.game_number: int | None = None
 
         self.required_files: list[tuple[str, ...]] = []

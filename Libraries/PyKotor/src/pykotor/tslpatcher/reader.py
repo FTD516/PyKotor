@@ -1151,7 +1151,8 @@ class ConfigReader:
 
         # Four floats
         if num_pipe_seps == 3:
-            return FieldValueConstant(Vector4(*components))
+            w, x, y, z = components
+            return FieldValueConstant(Vector4(x, y, z, w))
 
         msg = f"Cannot determine type/value from '{raw_value}'"
         raise ValueError(msg)
@@ -1200,8 +1201,8 @@ class ConfigReader:
             value = Vector3(*components)
 
         elif field_type.return_type() == Vector4:
-            components = [float(ConfigReader.normalize_tslpatcher_float(axis)) for axis in raw_value.split("|")]
-            value = Vector4(*components)
+            w, x, y, z = (float(ConfigReader.normalize_tslpatcher_float(axis)) for axis in raw_value.split("|"))
+            value = Vector4(x, y, z, w)
 
         elif field_type.return_type() == bytes:
             if not raw_value.strip().replace("1", "").replace("0", ""):

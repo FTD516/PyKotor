@@ -1147,7 +1147,7 @@ class TestConfigReader(unittest.TestCase):
         self.assertIsInstance(mod_0, ModifyFieldGFF)
         self.assertIsInstance(mod_0.value, FieldValueConstant)
         self.assertEqual("SomeVector", str(mod_0.path))
-        self.assertEqual(Vector4(1, 2, 3, 4), mod_0.value.stored)
+        self.assertEqual(Vector4(2, 3, 4, 1), mod_0.value.stored)
 
     def test_gff_modify_type_locstring(self):
         """Test that the modify field modifiers are registered correctly."""
@@ -1406,7 +1406,7 @@ class TestConfigReader(unittest.TestCase):
             """
         )
         mod_0 = config.patches_gff[0].modifiers.pop(0)
-        self._assert_batch(mod_0, Vector4(1, 2, 3, 4))
+        self._assert_batch(mod_0, Vector4(2, 3, 4, 1))
 
     def test_gff_add_resref(self):
         """Test that the add field modifiers are registered correctly."""
